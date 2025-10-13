@@ -1,0 +1,18 @@
+code,nome,hz,tipo,chakra,cor,descricao
+SOL174,Solfeggio 174 Hz,174,solfeggio,,,"Alívio, base corporal"
+SOL285,Solfeggio 285 Hz,285,solfeggio,,,Regeneração sutil
+SOL396,Solfeggio 396 Hz,396,solfeggio,raiz,vermelho,Libertação de medo/culpa
+SOL417,Solfeggio 417 Hz,417,solfeggio,sacral,laranja,Mudança e criatividade
+SOL432,Acorde 432 Hz,432,custom,,,Afinação natural popular
+SOL528,Solfeggio 528 Hz,528,solfeggio,cardiaco,verde,Transformação / amor
+SOL639,Solfeggio 639 Hz,639,solfeggio,cardiaco,verde,Relacionamentos
+SOL741,Solfeggio 741 Hz,741,solfeggio,laringeo,azul,Intuição / expressão
+SOL852,Solfeggio 852 Hz,852,solfeggio,terceiro_olho,anil,Retorno à ordem espiritual
+SOL963,Solfeggio 963 Hz,963,solfeggio,coronal,violeta,Unidade / conexão
+CHAKRA_RAIZ,Chakra Raiz,396,chakra,raiz,vermelho,Aterramento e segurança
+CHAKRA_SACRAL,Chakra Sacral,417,chakra,sacral,laranja,Criatividade e fluidez
+CHAKRA_PLEXO,Chakra Plexo Solar,528,chakra,plexo,amarelo,Poder pessoal
+CHAKRA_CARDIACO,Chakra Cardíaco,639,chakra,cardiaco,verde,Amor e compaixão
+CHAKRA_LARINGEO,Chakra Laríngeo,741,chakra,laringeo,azul,Expressão e verdade
+CHAKRA_TERCEIRO_OLHO,Chakra Terceiro Olho,852,chakra,terceiro_olho,anil,Clareza e visão
+CHAKRA_CORONAL,Chakra Coronal,963,chakra,coronal,violeta,Conexão espiritual
