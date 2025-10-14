@@ -1,19 +1,17 @@
-import os, json
+import os, json, io, wave
 from datetime import datetime
 import streamlit as st
 import pandas as pd
+import numpy as np
 from dotenv import load_dotenv
 
 # =========================================================
-# Config inicial (credenciais via .env OU Streamlit Secrets)
+# Credenciais (.env ou st.secrets)
 # =========================================================
 load_dotenv()
-
-# lida com .env e com st.secrets (deploy Streamlit Cloud)
 SUPABASE_URL = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
 
-# Cliente Supabase (opcional – app funciona parcialmente sem conexão)
 try:
     from supabase import create_client
     sb = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
@@ -34,6 +32,8 @@ st.markdown("""
 .main .block-container { padding-top: 1rem; padding-bottom: 1rem; }
 .modern-card { background: white; padding: 1.25rem; border-radius: 14px; 
                box-shadow: 0 6px 18px rgba(0,0,0,.07); border: 1px solid #eef; }
+.controls button { margin-right: .5rem; }
+.badge { display:inline-block; padding:.15rem .5rem; border-radius:999px; background:#f2f6ff; border:1px solid #e5eaff; font-size:.8rem; margin-right:.25rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -63,18 +63,13 @@ CHAKRA_MAP = {
 # Funções utilitárias
 # =========================================================
 def carregar_catalogo_freq() -> pd.DataFrame:
-    """
-    Tenta carregar o catálogo a partir do Supabase; se não houver conexão,
-    usa um fallback mínimo em memória.
-    """
     if sb:
         try:
             data = sb.table("frequencies").select("*").execute().data
             return pd.DataFrame(data or [])
         except Exception:
-            # Em caso de erro na consulta, evita quebrar a UI
             return pd.DataFrame([])
-    # Fallback local (mínimo)
+    # fallback local mínimo
     return pd.DataFrame([
         {"code":"SOL174","nome":"Solfeggio 174 Hz","hz":174,"tipo":"solfeggio","chakra":None,"cor":None},
         {"code":"SOL396","nome":"Solfeggio 396 Hz","hz":396,"tipo":"solfeggio","chakra":"raiz","cor":"vermelho"},
@@ -91,10 +86,6 @@ def carregar_catalogo_freq() -> pd.DataFrame:
     ])
 
 def gerar_protocolo(intencao: str, chakra_alvo: str|None, duracao_min: int, catalogo: pd.DataFrame) -> pd.DataFrame:
-    """
-    Gera uma playlist com duração distribuída entre as frequências base da intenção.
-    Reforça o chakra alvo se estiver no catálogo.
-    """
     base = INTENCOES.get(intencao, {"base": []})
     sel = list(dict.fromkeys(base["base"]))  # sem repetição mantendo ordem
 
@@ -132,6 +123,141 @@ def gerar_protocolo(intencao: str, chakra_alvo: str|None, duracao_min: int, cata
 
     return pd.DataFrame(linhas)
 
+# ---------- ÁUDIO: síntese WAV (prévia 20s por etapa) ----------
+def synth_tone_wav(freq: float, seconds: float = 20.0, sr: int = 22050, amp: float = 0.2) -> bytes:
+    """
+    Gera uma amostra WAV (mono, 16-bit) de 'seconds' para uma frequência 'freq'.
+    Usa fade-in/out curto para evitar 'clicks'.
+    """
+    t = np.linspace(0, seconds, int(sr*seconds), endpoint=False)
+    wavef = np.sin(2*np.pi*freq*t)
+
+    # rampas de 10 ms
+    ramp = max(1, int(sr * 0.01))
+    env = np.ones_like(wavef)
+    env[:ramp] = np.linspace(0, 1, ramp)
+    env[-ramp:] = np.linspace(1, 0, ramp)
+    y = (wavef * env * amp).astype(np.float32)
+
+    # converte para 16-bit PCM
+    y_int16 = np.int16(np.clip(y, -1, 1) * 32767)
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(sr)
+        wf.writeframes(y_int16.tobytes())
+    return buf.getvalue()
+
+# ---------- ÁUDIO: player WebAudio (toca no navegador) ----------
+def webaudio_player_html(plano: pd.DataFrame) -> str:
+    """
+    Gera HTML/JS (WebAudio API) para tocar a sequência no browser.
+    Evita transferir WAVs grandes; usa oscilador local.
+    """
+    items = [
+        {"hz": float(r["hz"]), "dur": int(r["duracao_seg"]), "label": f'{int(r["hz"])} Hz — {r["nome"] or r["code"]}'}
+        for _, r in plano.iterrows()
+    ]
+    playlist_json = json.dumps(items)
+    html = f"""
+<div class="modern-card">
+  <div><strong>Player (WebAudio):</strong> toca no navegador, sem baixar arquivos.</div>
+  <div class="controls" style="margin-top:.5rem;">
+    <button id="btnPlay">▶️ Play</button>
+    <button id="btnPause">⏸️ Pause</button>
+    <button id="btnStop">⏹️ Stop</button>
+  </div>
+  <div id="status" style="margin-top:.5rem; font-size:.9rem;"></div>
+  <div id="now" style="margin-top:.25rem;"></div>
+</div>
+
+<script>
+const playlist = {playlist_json};
+let ctx = null, osc = null, gain = null;
+let idx = 0;
+let playing = false;
+let stepTimer = null;
+
+function fmtSec(s) {{
+  const m = Math.floor(s/60), r = s%60;
+  return m + "m " + r + "s";
+}}
+
+function updateStatus() {{
+  const item = playlist[idx] || null;
+  let text = "Pronto.";
+  if (playing && item) {{
+    text = `Tocando: ${{item.label}} | Etapa ${{idx+1}}/${{playlist.length}} (~${{fmtSec(item.dur)}})`;
+  }}
+  document.getElementById("status").textContent = text;
+}}
+
+function stopAll() {{
+  playing = false;
+  if (stepTimer) {{ clearTimeout(stepTimer); stepTimer = null; }}
+  if (osc) {{ try {{ osc.stop(); }} catch(e){{}} osc.disconnect(); osc = null; }}
+  if (gain) {{ gain.disconnect(); gain = null; }}
+  if (ctx) {{ /* não fecha para reutilizar */ }}
+  document.getElementById("now").textContent = "";
+  updateStatus();
+}}
+
+function playStep() {{
+  if (!playing) return;
+  if (idx >= playlist.length) {{
+    stopAll();
+    return;
+  }}
+  const item = playlist[idx];
+
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  osc = ctx.createOscillator();
+  gain = ctx.createGain();
+
+  osc.type = "sine";
+  osc.frequency.value = item.hz;
+  gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.05); // fade-in
+  osc.connect(gain).connect(ctx.destination);
+  osc.start();
+
+  document.getElementById("now").textContent = item.label;
+  updateStatus();
+
+  // agenda fade-out + próxima etapa
+  const dur = Math.max(1, item.dur);
+  stepTimer = setTimeout(() => {{
+    if (!playing) return;
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.05); // fade-out curto
+    try {{ osc.stop(ctx.currentTime + 0.06); }} catch(e) {{}}
+    idx += 1;
+    setTimeout(() => playStep(), 100); // pequena folga
+  }}, dur * 1000);
+}}
+
+document.getElementById("btnPlay").onclick = () => {{
+  if (!playlist.length) return;
+  if (!playing) {{ playing = true; if (idx >= playlist.length) idx = 0; }}
+  playStep();
+}};
+document.getElementById("btnPause").onclick = () => {{
+  playing = false;
+  if (stepTimer) {{ clearTimeout(stepTimer); stepTimer = null; }}
+  if (gain) gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.02);
+  if (osc) try {{ osc.stop(ctx.currentTime + 0.05); }} catch(e) {{}}
+  updateStatus();
+}};
+document.getElementById("btnStop").onclick = () => {{
+  idx = 0;
+  stopAll();
+}};
+updateStatus();
+</script>
+"""
+    return html
+
 # =========================================================
 # UI
 # =========================================================
@@ -158,6 +284,7 @@ with tab1:
             if plano.empty:
                 st.warning("Não foi possível montar a playlist com as frequências atuais do catálogo.")
             else:
+                st.subheader("Protocolo sugerido")
                 st.dataframe(plano, use_container_width=True, hide_index=True)
                 st.download_button(
                     "Baixar CSV",
@@ -166,6 +293,26 @@ with tab1:
                     mime="text/csv",
                     key="btn_dl_protocolo"
                 )
+
+                st.markdown("#### ▶️ Tocar protocolo no navegador (WebAudio)")
+                from streamlit.components.v1 import html as st_html
+                st_html(webaudio_player_html(plano), height=260)
+
+                st.markdown("#### 🎧 Prévias em WAV (20s por etapa)")
+                for _, r in plano.iterrows():
+                    wav_bytes = synth_tone_wav(float(r["hz"]), seconds=20.0, sr=22050, amp=0.2)
+                    colA, colB = st.columns([0.7, 0.3])
+                    with colA:
+                        st.audio(wav_bytes, format="audio/wav", start_time=0)
+                        st.caption(f'{int(r["hz"])} Hz — {r["nome"] or r["code"]} (prévia 20s)')
+                    with colB:
+                        st.download_button(
+                            "Baixar WAV (20s)",
+                            data=wav_bytes,
+                            file_name=f'{int(r["hz"])}Hz_preview.wav',
+                            mime="audio/wav",
+                            key=f'dl_wav_{int(r["hz"])}'
+                        )
 
 # ---------------- Pacientes ----------------
 with tab2:
@@ -267,7 +414,6 @@ with tab4:
             "Catálogo ainda não está carregado ou está sem colunas esperadas. "
             "Vá até a aba **Admin** e importe o arquivo `seed_frequencies.csv`."
         )
-        # Mostra o que tiver (útil para depurar)
         if not df.empty:
             st.dataframe(df, use_container_width=True, hide_index=True)
     else:
@@ -293,19 +439,29 @@ with tab5:
             if "hz" in df.columns:
                 df["hz"] = pd.to_numeric(df["hz"], errors="coerce")
 
-            # Converte tipo para um dos enums válidos
+            # Normaliza 'tipo' para ENUM válido
             if "tipo" in df.columns and df["tipo"].dtype == object:
-                df["tipo"] = df["tipo"].str.lower().replace({"color":"cor"})
+                df["tipo"] = (
+                    df["tipo"].str.strip().str.lower()
+                    .replace({"color":"cor"})
+                )
 
             rows = df.to_dict(orient="records")
             ok, fail = 0, 0
+            falhas = []
             for r in rows:
                 try:
-                    sb.table("frequencies").upsert(r).execute()
+                    sb.table("frequencies").upsert(r, on_conflict="code").execute()
                     ok += 1
-                except Exception:
+                except Exception as e:
                     fail += 1
+                    falhas.append({"code": r.get("code"), "erro": str(e)})
+
             st.success(f"Importadas/atualizadas: {ok}. Falhas: {fail}.")
+            if falhas:
+                st.write("Falhas detalhadas:")
+                st.dataframe(pd.DataFrame(falhas), use_container_width=True, hide_index=True)
+
         except Exception as e:
             st.error(f"Erro ao importar seed: {e}")
     elif not sb:
