@@ -72,6 +72,86 @@ BANDS = {  # faixas típicas de batida binaural
 }
 
 # =========================================================
+# Templates de planos (educativos, não médicos)
+# =========================================================
+TEMPLATES = {
+    "Ansiedade leve / Estresse": {
+        "objetivo": "Reduzir ativação e promover relaxamento com integração.",
+        "faixas_recomendadas": ["Alpha (8–12 Hz)", "Theta (4–8 Hz)"],
+        "n_sessoes": 8,
+        "cadencia": "1x/semana",
+        "notas": "Iniciar com respiração diafragmática; evitar cafeína 4–6h antes.",
+        "roteiro_binaural": [
+            {"fase": "Chegada/Aterramento", "carrier_hz": 220, "beat_hz": 10.0, "duracao_min": 5},
+            {"fase": "Aprofundamento",      "carrier_hz": 220, "beat_hz": 6.0,  "duracao_min": 15},
+            {"fase": "Integração",          "carrier_hz": 220, "beat_hz": 10.0, "duracao_min": 10},
+        ],
+        "frequencias_suporte": [
+            {"tipo":"frequencia", "valor":"396 Hz (aterramento)", "dur_min":5},
+            {"tipo":"frequencia", "valor":"528/639 Hz (integração coração)", "dur_min":10},
+        ]
+    },
+    "Insônia (higiene do sono)": {
+        "objetivo": "Facilitar transição vigília-sono e manter repouso.",
+        "faixas_recomendadas": ["Theta (4–8 Hz)", "Delta (1–4 Hz)"],
+        "n_sessoes": 6,
+        "cadencia": "3x/semana",
+        "notas": "Evitar telas/estímulos; usar em ambiente escuro; volume baixo.",
+        "roteiro_binaural": [
+            {"fase": "Desaceleração", "carrier_hz": 200, "beat_hz": 7.0, "duracao_min": 10},
+            {"fase": "Indução",       "carrier_hz": 180, "beat_hz": 3.0, "duracao_min": 20},
+        ],
+        "frequencias_suporte": [
+            {"tipo":"frequencia", "valor":"174 Hz (acolhimento)", "dur_min":5}
+        ]
+    },
+    "Foco / Produtividade calma": {
+        "objetivo": "Aumentar foco sustentado com baixo estresse.",
+        "faixas_recomendadas": ["Alpha (8–12 Hz)"],
+        "n_sessoes": 6,
+        "cadencia": "2x/semana",
+        "notas": "Ideal no início do expediente; hidratar-se; pausas a cada 50 min.",
+        "roteiro_binaural": [
+            {"fase": "Preparação", "carrier_hz": 240, "beat_hz": 10.0, "duracao_min": 5},
+            {"fase": "Foco calmo", "carrier_hz": 240, "beat_hz": 10.0, "duracao_min": 20},
+            {"fase": "Descompressão", "carrier_hz": 220, "beat_hz": 8.0, "duracao_min": 5},
+        ],
+        "frequencias_suporte": [
+            {"tipo":"frequencia", "valor":"741 Hz (clareza/expressão)", "dur_min":5}
+        ]
+    },
+    "Tensão muscular / Dor leve": {
+        "objetivo": "Reduzir tensão e sensibilização com relaxamento guiado.",
+        "faixas_recomendadas": ["Theta (4–8 Hz)", "Alpha (8–12 Hz)"],
+        "n_sessoes": 8,
+        "cadencia": "2x/semana",
+        "notas": "Alongamentos suaves após a sessão; atenção a limites pessoais.",
+        "roteiro_binaural": [
+            {"fase": "Abrandamento", "carrier_hz": 200, "beat_hz": 8.0, "duracao_min": 10},
+            {"fase": "Profundidade", "carrier_hz": 200, "beat_hz": 6.0, "duracao_min": 15},
+        ],
+        "frequencias_suporte": [
+            {"tipo":"frequencia", "valor":"174 Hz", "dur_min":10},
+            {"tipo":"frequencia", "valor":"528 Hz (reparadora)", "dur_min":10},
+        ]
+    },
+    "Enxaqueca leve (entre crises)": {
+        "objetivo": "Desanuviar e prevenir tensão; não usar em crise aguda intensa.",
+        "faixas_recomendadas": ["Alpha (8–12 Hz)"],
+        "n_sessoes": 6,
+        "cadencia": "1x/semana",
+        "notas": "Evitar estímulos altos; interromper se desconforto. Procure médico se persistir.",
+        "roteiro_binaural": [
+            {"fase": "Descompressão", "carrier_hz": 210, "beat_hz": 10.0, "duracao_min": 10},
+            {"fase": "Calmante",      "carrier_hz": 200, "beat_hz": 8.0,  "duracao_min": 15},
+        ],
+        "frequencias_suporte": [
+            {"tipo":"frequencia", "valor":"639 Hz (integração coração)", "dur_min":10}
+        ]
+    },
+}
+
+# =========================================================
 # Funções utilitárias — catálogo e protocolo
 # =========================================================
 def carregar_catalogo_freq() -> pd.DataFrame:
@@ -101,7 +181,7 @@ def carregar_catalogo_freq() -> pd.DataFrame:
 def gerar_protocolo(intencao: str, chakra_alvo: str|None, duracao_min: int, catalogo: pd.DataFrame) -> pd.DataFrame:
     """Gera playlist distribuindo duração entre frequências da intenção; reforça chakra alvo."""
     base = INTENCOES.get(intencao, {"base": []})
-    sel = list(dict.fromkeys(base["base"]))  # sem repetição mantendo ordem
+    sel = list(dict.fromkeys(base["base"]))
     if chakra_alvo:
         ccode = f"CHAKRA_{chakra_alvo.upper()}"
         if (catalogo["code"] == ccode).any() and ccode not in sel:
@@ -115,8 +195,7 @@ def gerar_protocolo(intencao: str, chakra_alvo: str|None, duracao_min: int, cata
     linhas = []
     for i, code in enumerate(sel, start=1):
         row = catalogo.loc[catalogo["code"] == code]
-        if row.empty:
-            continue
+        if row.empty: continue
         row = row.iloc[0]
         linhas.append({
             "ordem": i,
@@ -136,7 +215,6 @@ def gerar_protocolo(intencao: str, chakra_alvo: str|None, duracao_min: int, cata
 # Áudio — síntese WAV e players WebAudio
 # =========================================================
 def synth_tone_wav(freq: float, seconds: float = 20.0, sr: int = 22050, amp: float = 0.2) -> bytes:
-    """Gera amostra WAV mono 16-bit com fade-in/out curto para evitar clicks."""
     t = np.linspace(0, seconds, int(sr*seconds), endpoint=False)
     wavef = np.sin(2*np.pi*freq*t)
     ramp = max(1, int(sr * 0.01))  # 10ms
@@ -147,54 +225,37 @@ def synth_tone_wav(freq: float, seconds: float = 20.0, sr: int = 22050, amp: flo
     y_int16 = np.int16(np.clip(y, -1, 1) * 32767)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)  # 16-bit
-        wf.setframerate(sr)
+        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
         wf.writeframes(y_int16.tobytes())
     return buf.getvalue()
 
 def synth_binaural_wav(carrier_hz: float, beat_hz: float, seconds: float = 20.0,
                        sr: int = 44100, amp: float = 0.2) -> bytes:
-    """
-    Gera WAV estéreo 16-bit com batida binaural:
-    L = carrier - beat/2 | R = carrier + beat/2
-    """
     beat_hz = abs(float(beat_hz))
     fc = float(carrier_hz)
     fl = max(1.0, fc - beat_hz/2.0)
     fr = fc + beat_hz/2.0
-
     t = np.linspace(0, seconds, int(sr*seconds), endpoint=False)
-    left = np.sin(2*np.pi*fl*t)
-    right = np.sin(2*np.pi*fr*t)
-
-    # fade-in/out de 10ms
+    left = np.sin(2*np.pi*fl*t); right = np.sin(2*np.pi*fr*t)
     ramp = max(1, int(sr * 0.01))
     env = np.ones_like(left)
-    env[:ramp] = np.linspace(0, 1, ramp)
-    env[-ramp:] = np.linspace(1, 0, ramp)
-    left = left * env * amp
-    right = right * env * amp
-
+    env[:ramp] = np.linspace(0, 1, ramp); env[-ramp:] = np.linspace(1, 0, ramp)
+    left = left * env * amp; right = right * env * amp
     stereo = np.vstack([left, right]).T
     y_int16 = np.int16(np.clip(stereo, -1, 1) * 32767)
-
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
-        wf.setnchannels(2)
-        wf.setsampwidth(2)
-        wf.setframerate(sr)
+        wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(sr)
         wf.writeframes(y_int16.tobytes())
     return buf.getvalue()
 
 def webaudio_player_html(plano: pd.DataFrame) -> str:
-    """Player WebAudio para tocar a sequência inteira (mono) no navegador."""
     items = [
         {"hz": float(r["hz"]), "dur": int(r["duracao_seg"]), "label": f'{int(r["hz"])} Hz — {r["nome"] or r["code"]}'}
         for _, r in plano.iterrows()
     ]
     playlist_json = json.dumps(items)
-    html = f"""
+    return f"""
 <div class="modern-card">
   <div class="section-title">Player (WebAudio)</div>
   <div class="help">Toca a sequência do protocolo diretamente no navegador (sem baixar arquivos).</div>
@@ -208,89 +269,48 @@ def webaudio_player_html(plano: pd.DataFrame) -> str:
 </div>
 <script>
 const playlist = {playlist_json};
-let ctx = null, osc = null, gain = null;
-let idx = 0;
-let playing = false;
-let stepTimer = null;
-
-function fmtSec(s) {{
-  const m = Math.floor(s/60), r = s%60;
-  return m + "m " + r + "s";
-}}
-
-function updateStatus() {{
+let ctx=null, osc=null, gain=null, idx=0, playing=false, stepTimer=null;
+function fmtSec(s){{const m=Math.floor(s/60),r=s%60;return m+"m "+r+"s";}}
+function updateStatus(){{
   const item = playlist[idx] || null;
   let text = "Pronto.";
-  if (playing && item) {{
-    text = `Tocando: ${{item.label}} | Etapa ${{idx+1}}/${{playlist.length}} (~${{fmtSec(item.dur)}})`;
-  }}
+  if (playing && item) text = `Tocando: ${'{'}item.label{'}'} | Etapa ${'{'}idx+1{'}'}/${'{'}playlist.length{'}'} (~${'{'}fmtSec(item.dur){'}'})`;
   document.getElementById("status").textContent = text;
 }}
-
-function stopAll() {{
-  playing = false;
-  if (stepTimer) {{ clearTimeout(stepTimer); stepTimer = null; }}
-  if (osc) {{ try {{ osc.stop(); }} catch(e){{}} osc.disconnect(); osc = null; }}
-  if (gain) {{ gain.disconnect(); gain = null; }}
-  document.getElementById("now").textContent = "";
-  updateStatus();
+function stopAll(){{
+  playing=false;
+  if (stepTimer){{clearTimeout(stepTimer);stepTimer=null;}}
+  if (osc){{try{{osc.stop();}}catch(e){{}} osc.disconnect(); osc=null;}}
+  if (gain){{gain.disconnect(); gain=null;}}
+  document.getElementById("now").textContent=""; updateStatus();
 }}
-
-function playStep() {{
-  if (!playing) return;
-  if (idx >= playlist.length) {{
-    stopAll();
-    return;
-  }}
+function playStep(){{
+  if(!playing) return;
+  if(idx>=playlist.length){{stopAll();return;}}
   const item = playlist[idx];
-
-  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-  osc = ctx.createOscillator();
-  gain = ctx.createGain();
-
-  osc.type = "sine";
-  osc.frequency.value = item.hz;
+  if(!ctx) ctx = new (window.AudioContext||window.webkitAudioContext)();
+  osc = ctx.createOscillator(); gain = ctx.createGain();
+  osc.type="sine"; osc.frequency.value=item.hz;
   gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.05);
-  osc.connect(gain).connect(ctx.destination);
-  osc.start();
-
-  document.getElementById("now").textContent = item.label;
-  updateStatus();
-
-  const dur = Math.max(1, item.dur);
-  stepTimer = setTimeout(() => {{
-    if (!playing) return;
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.05);
-    try {{ osc.stop(ctx.currentTime + 0.06); }} catch(e) {{}}
-    idx += 1;
-    setTimeout(() => playStep(), 100);
-  }}, dur * 1000);
+  gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
+  osc.connect(gain).connect(ctx.destination); osc.start();
+  document.getElementById("now").textContent=item.label; updateStatus();
+  const dur=Math.max(1,item.dur);
+  stepTimer=setTimeout(()=>{{
+    if(!playing) return;
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.05);
+    try{{osc.stop(ctx.currentTime+0.06);}}catch(e){{}}
+    idx+=1; setTimeout(()=>playStep(),100);
+  }}, dur*1000);
 }}
-
-document.getElementById("btnPlay").onclick = () => {{
-  if (!playlist.length) return;
-  if (!playing) {{ playing = true; if (idx >= playlist.length) idx = 0; }}
-  playStep();
-}};
-document.getElementById("btnPause").onclick = () => {{
-  playing = false;
-  if (stepTimer) {{ clearTimeout(stepTimer); stepTimer = null; }}
-  if (gain) gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.02);
-  if (osc) try {{ osc.stop(ctx.currentTime + 0.05); }} catch(e) {{}}
-  updateStatus();
-}};
-document.getElementById("btnStop").onclick = () => {{
-  idx = 0;
-  stopAll();
-}};
+document.getElementById("btnPlay").onclick=()=>{{ if(!playlist.length) return; if(!playing){{playing=true; if(idx>=playlist.length) idx=0;}} playStep(); }};
+document.getElementById("btnPause").onclick=()=>{{ playing=false; if(stepTimer){{clearTimeout(stepTimer);stepTimer=null;}} if(gain) gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.02); if(osc) try{{osc.stop(ctx.currentTime+0.05);}}catch(e){{}} updateStatus(); }};
+document.getElementById("btnStop").onclick=()=>{{ idx=0; stopAll(); }};
 updateStatus();
 </script>
 """
-    return html
 
 def webaudio_single_html(freq_hz: float, seconds: int = 20) -> str:
-    """Player WebAudio para tocar UMA frequência (mono) por X segundos."""
     return f"""
 <div class="modern-card">
   <div class="section-title">Frequência única</div>
@@ -303,42 +323,16 @@ def webaudio_single_html(freq_hz: float, seconds: int = 20) -> str:
   <div id="s_status" style="margin-top:.5rem; font-size:.95rem;"></div>
 </div>
 <script>
-let ctx = null, osc = null, gain = null, timer = null;
-const freq = {float(freq_hz)};
-const dur = {int(seconds)};
-function stopAll(){{
-  if (timer) {{ clearTimeout(timer); timer = null; }}
-  if (osc) {{ try{{osc.stop();}}catch(e){{}} osc.disconnect(); osc = null; }}
-  if (gain) {{ gain.disconnect(); gain = null; }}
-  document.getElementById("s_status").textContent = "Parado.";
-}}
-document.getElementById("s_play").onclick = () => {{
-  stopAll();
-  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-  osc = ctx.createOscillator();
-  gain = ctx.createGain();
-  osc.type = "sine";
-  osc.frequency.value = freq;
-  gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.05);
-  osc.connect(gain).connect(ctx.destination);
-  osc.start();
-  document.getElementById("s_status").textContent = "Tocando " + freq + " Hz (" + dur + "s)";
-  timer = setTimeout(() => {{ stopAll(); }}, dur * 1000);
-}};
-document.getElementById("s_stop").onclick = () => stopAll();
+let ctx=null,osc=null,gain=null,timer=null; const freq={float(freq_hz)}, dur={int(seconds)};
+function stopAll(){{ if(timer){{clearTimeout(timer);timer=null;}} if(osc){{try{{osc.stop();}}catch(e){{}} osc.disconnect(); osc=null;}} if(gain){{gain.disconnect(); gain=null;}} document.getElementById("s_status").textContent="Parado."; }}
+document.getElementById("s_play").onclick=()=>{{ stopAll(); if(!ctx) ctx=new (window.AudioContext||window.webkitAudioContext)(); osc=ctx.createOscillator(); gain=ctx.createGain(); osc.type="sine"; osc.frequency.value=freq; gain.gain.setValueAtTime(0.0001, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05); osc.connect(gain).connect(ctx.destination); osc.start(); document.getElementById("s_status").textContent="Tocando "+freq+" Hz ("+dur+"s)"; timer=setTimeout(()=>{{stopAll();}}, dur*1000); }};
+document.getElementById("s_stop").onclick=()=>stopAll();
 </script>
 """
 
 def webaudio_binaural_html(carrier_hz: float, beat_hz: float, seconds: int = 20) -> str:
-    """
-    Player WebAudio estéreo: L = carrier - beat/2 | R = carrier + beat/2
-    Com exibição clara de L/R.
-    """
-    fc = float(carrier_hz)
-    bt = abs(float(beat_hz))
-    fl = max(1.0, fc - bt/2.0)
-    fr = fc + bt/2.0
+    fc = float(carrier_hz); bt = abs(float(beat_hz))
+    fl = max(1.0, fc - bt/2.0); fr = fc + bt/2.0
     return f"""
 <div class="modern-card">
   <div class="section-title">Binaural (L/R)</div>
@@ -355,54 +349,38 @@ def webaudio_binaural_html(carrier_hz: float, beat_hz: float, seconds: int = 20)
   <div id="b_status" class="help"></div>
 </div>
 <script>
-let ctx=null, oscL=null, oscR=null, gainL=null, gainR=null, merger=null, timer=null;
-const sec = {int(seconds)};
-const fL = {float(fl)};
-const fR = {float(fr)};
-
+let ctx=null,oscL=null,oscR=null,gainL=null,gainR=null,merger=null,timer=null;
+const sec={int(seconds)}, fL={float(fl)}, fR={float(fr)};
 function stopAll(){{
-  if (timer) {{ clearTimeout(timer); timer=null; }}
-  [oscL, oscR].forEach(o => {{ if (o) try{{o.stop();}}catch(e){{}} }});
-  [oscL, oscR, gainL, gainR].forEach(n => {{ if(n) n.disconnect(); }});
+  if(timer){{clearTimeout(timer);timer=null;}}
+  [oscL,oscR].forEach(o=>{{if(o)try{{o.stop();}}catch(e){{}}}});
+  [oscL,oscR,gainL,gainR].forEach(n=>{{if(n)n.disconnect();}});
   oscL=oscR=gainL=gainR=merger=null;
-  document.getElementById("b_status").textContent = "Parado.";
+  document.getElementById("b_status").textContent="Parado.";
 }}
-
-document.getElementById("b_play").onclick = () => {{
-  stopAll();
-  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-
-  oscL = ctx.createOscillator(); oscL.type="sine"; oscL.frequency.value=fL;
-  oscR = ctx.createOscillator(); oscR.type="sine"; oscR.frequency.value=fR;
-  gainL = ctx.createGain(); gainR = ctx.createGain();
-  gainL.gain.setValueAtTime(0.0001, ctx.currentTime);
-  gainR.gain.setValueAtTime(0.0001, ctx.currentTime);
-  gainL.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
-  gainR.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
-
-  merger = ctx.createChannelMerger(2);
-  oscL.connect(gainL).connect(merger, 0, 0); // L
-  oscR.connect(gainR).connect(merger, 0, 1); // R
-  merger.connect(ctx.destination);
-
-  oscL.start(); oscR.start();
-  document.getElementById("b_status").textContent = "Tocando…";
-  timer = setTimeout(() => stopAll(), sec*1000);
+document.getElementById("b_play").onclick=()=>{{
+  stopAll(); if(!ctx) ctx=new (window.AudioContext||window.webkitAudioContext)();
+  oscL=ctx.createOscillator(); oscL.type="sine"; oscL.frequency.value=fL;
+  oscR=ctx.createOscillator(); oscR.type="sine"; oscR.frequency.value=fR;
+  gainL=ctx.createGain(); gainR=ctx.createGain();
+  gainL.gain.setValueAtTime(0.0001, ctx.currentTime); gainR.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gainL.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05); gainR.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
+  merger=ctx.createChannelMerger(2);
+  oscL.connect(gainL).connect(merger,0,0); oscR.connect(gainR).connect(merger,0,1);
+  merger.connect(ctx.destination); oscL.start(); oscR.start();
+  document.getElementById("b_status").textContent="Tocando…";
+  timer=setTimeout(()=>stopAll(), sec*1000);
 }};
-document.getElementById("b_stop").onclick = () => stopAll();
+document.getElementById("b_stop").onclick=()=>stopAll();
 </script>
 """
 
 def webaudio_playlist_binaural_html(fases: list) -> str:
-    """
-    Toca o ROTEIRO inteiro, fase-a-fase (binaural).
-    'fases' é uma lista de {label, left_hz, right_hz, dur}.
-    """
     data = json.dumps(fases)
     return f"""
 <div class="modern-card">
   <div class="section-title">Roteiro binaural — Execução automática</div>
-  <div class="help">Toca cada fase na ordem. Use <b>fones</b>. Volte e edite a tabela acima para ajustar.</div>
+  <div class="help">Toca cada fase na ordem. Use <b>fones</b>. Edite a tabela acima para ajustar.</div>
   <div class="controls" style="margin-top:.5rem;">
     <button id="rb_play">▶️ Play Roteiro</button>
     <button id="rb_stop">⏹️ Stop</button>
@@ -412,57 +390,33 @@ def webaudio_playlist_binaural_html(fases: list) -> str:
 </div>
 <script>
 const roteiro = {data};
-let ctx=null, oscL=null, oscR=null, gainL=null, gainR=null, merger=null, timer=null;
-let i=0, playing=false;
-
+let ctx=null, oscL=null, oscR=null, gainL=null, gainR=null, merger=null, timer=null, i=0, playing=false;
 function stopAll(){{
-  playing=false;
-  if (timer) {{ clearTimeout(timer); timer=null; }}
-  [oscL, oscR].forEach(o => {{ if (o) try{{o.stop();}}catch(e){{}} }});
-  [oscL, oscR, gainL, gainR].forEach(n => {{ if(n) n.disconnect(); }});
+  playing=false; if(timer){{clearTimeout(timer);timer=null;}}
+  [oscL,oscR].forEach(o=>{{ if(o) try{{o.stop();}}catch(e){{}} }});
+  [oscL,oscR,gainL,gainR].forEach(n=>{{ if(n) n.disconnect(); }});
   oscL=oscR=gainL=gainR=merger=null;
-  document.getElementById("rb_status").textContent = "Parado.";
-  document.getElementById("rb_now").textContent = "";
+  document.getElementById("rb_status").textContent="Parado."; document.getElementById("rb_now").textContent="";
 }}
-
 function playStep(){{
-  if (!playing) return;
-  if (i >= roteiro.length) {{ stopAll(); return; }}
-  const f = roteiro[i];
-  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-
-  oscL = ctx.createOscillator(); oscL.type="sine"; oscL.frequency.value=f.left_hz;
-  oscR = ctx.createOscillator(); oscR.type="sine"; oscR.frequency.value=f.right_hz;
-  gainL = ctx.createGain(); gainR = ctx.createGain();
-  gainL.gain.setValueAtTime(0.0001, ctx.currentTime);
-  gainR.gain.setValueAtTime(0.0001, ctx.currentTime);
-  gainL.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
-  gainR.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
-  merger = ctx.createChannelMerger(2);
-  oscL.connect(gainL).connect(merger, 0, 0);
-  oscR.connect(gainR).connect(merger, 0, 1);
-  merger.connect(ctx.destination);
-
+  if(!playing) return;
+  if(i>=roteiro.length){{stopAll();return;}}
+  const f=roteiro[i];
+  if(!ctx) ctx=new (window.AudioContext||window.webkitAudioContext)();
+  oscL=ctx.createOscillator(); oscL.type="sine"; oscL.frequency.value=f.left_hz;
+  oscR=ctx.createOscillator(); oscR.type="sine"; oscR.frequency.value=f.right_hz;
+  gainL=ctx.createGain(); gainR=ctx.createGain();
+  gainL.gain.setValueAtTime(0.0001, ctx.currentTime); gainR.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gainL.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05); gainR.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
+  merger=ctx.createChannelMerger(2); oscL.connect(gainL).connect(merger,0,0); oscR.connect(gainR).connect(merger,0,1); merger.connect(ctx.destination);
   oscL.start(); oscR.start();
-  document.getElementById("rb_status").textContent = `Fase ${{i+1}}/${{roteiro.length}}`;
-  document.getElementById("rb_now").innerHTML = `<span class="badge">L ${'{'}f.left_hz.toFixed(2){'}'} Hz</span>
+  document.getElementById("rb_status").textContent=`Fase ${'{'}i+1{'}'}/${'{'}roteiro.length{'}'}`;
+  document.getElementById("rb_now").innerHTML=`<span class="badge">L ${'{'}f.left_hz.toFixed(2){'}'} Hz</span>
     <span class="badge">R ${'{'}f.right_hz.toFixed(2){'}'} Hz</span> — ${'{'}f.label{'}'}`;
-
-  timer = setTimeout(() => {{
-    try {{ oscL.stop(); oscR.stop(); }} catch(e) {{}}
-    [oscL, oscR, gainL, gainR].forEach(n => {{ if(n) n.disconnect(); }});
-    oscL=oscR=gainL=gainR=merger=null;
-    i += 1;
-    setTimeout(playStep, 120);
-  }}, Math.max(1, f.dur) * 1000);
+  timer=setTimeout(()=>{{ try{{oscL.stop();oscR.stop();}}catch(e){{}} [oscL,oscR,gainL,gainR].forEach(n=>{{if(n)n.disconnect();}}); oscL=oscR=gainL=gainR=merger=null; i+=1; setTimeout(playStep,120); }}, Math.max(1,f.dur)*1000);
 }}
-
-document.getElementById("rb_play").onclick = () => {{
-  if (!roteiro.length) return;
-  stopAll();
-  i=0; playing=true; playStep();
-}};
-document.getElementById("rb_stop").onclick = () => stopAll();
+document.getElementById("rb_play").onclick=()=>{{ if(!roteiro.length) return; stopAll(); i=0; playing=true; playStep(); }};
+document.getElementById("rb_stop").onclick=()=>stopAll();
 </script>
 """
 
@@ -596,7 +550,6 @@ with tab3:
             pats = sb.table("patients").select("id,nome").execute().data
         except Exception:
             pats = []
-
         mapa = {p["nome"]: p["id"] for p in (pats or [])}
         nome = st.selectbox("Paciente", list(mapa.keys()) if mapa else ["—"], key="sess_paciente")
 
@@ -632,7 +585,6 @@ with tab3:
                 except Exception as e:
                     st.error(f"Erro ao criar sessão: {e}")
 
-        # listar sessões
         try:
             sess = sb.table("sessions").select("id,data,intencao,duracao_min,status").order("created_at", desc=True).execute().data
         except Exception:
@@ -656,12 +608,10 @@ with tab4:
     else:
         st.dataframe(df[expected], use_container_width=True, hide_index=True)
 
-        # Audição rápida do catálogo (label -> hz)
         st.markdown("**Audição rápida do catálogo**")
         df_ok = df.dropna(subset=["hz"])
         if not df_ok.empty:
-            labels = []
-            label_to_hz = {}
+            labels = []; label_to_hz = {}
             for i, row in enumerate(df_ok.itertuples(index=False), start=1):
                 hz = float(getattr(row, "hz"))
                 try:
@@ -700,36 +650,21 @@ with tab5:
     if up and sb and st.button("Importar agora", key="admin_btn_importar"):
         try:
             df = pd.read_csv(up)
-
-            # Converte strings vazias para None (NULL no Postgres)
             for col in ["chakra", "cor", "descricao", "code", "nome"]:
-                if col in df.columns:
-                    df[col] = df[col].replace({"": None})
-
-            # Converte hz para número
-            if "hz" in df.columns:
-                df["hz"] = pd.to_numeric(df["hz"], errors="coerce")
-
-            # Normaliza 'tipo' para ENUM válido
+                if col in df.columns: df[col] = df[col].replace({"": None})
+            if "hz" in df.columns: df["hz"] = pd.to_numeric(df["hz"], errors="coerce")
             if "tipo" in df.columns and df["tipo"].dtype == object:
                 df["tipo"] = df["tipo"].str.strip().str.lower().replace({"color": "cor"})
-
             rows = df.to_dict(orient="records")
-            ok, fail = 0, 0
-            falhas = []
+            ok, fail, falhas = 0, 0, []
             for r in rows:
                 try:
-                    sb.table("frequencies").upsert(r, on_conflict="code").execute()
-                    ok += 1
+                    sb.table("frequencies").upsert(r, on_conflict="code").execute(); ok += 1
                 except Exception as e:
-                    fail += 1
-                    falhas.append({"code": r.get("code"), "erro": str(e)})
-
+                    fail += 1; falhas.append({"code": r.get("code"), "erro": str(e)})
             st.success(f"Importadas/atualizadas: {ok}. Falhas: {fail}.")
             if falhas:
-                st.write("Falhas detalhadas:")
-                st.dataframe(pd.DataFrame(falhas), use_container_width=True, hide_index=True)
-
+                st.write("Falhas detalhadas:"); st.dataframe(pd.DataFrame(falhas), use_container_width=True, hide_index=True)
         except Exception as e:
             st.error(f"Erro ao importar seed: {e}")
     elif not sb:
@@ -740,57 +675,49 @@ with tab6:
     st.subheader("Binaurais — tela guiada")
     st.markdown('<div class="help">Crie batidas binaurais (diferentes em cada ouvido). Use <b>fones</b>.</div>', unsafe_allow_html=True)
 
-    # Passo A — Definir uma batida
     st.markdown("**Passo A — Definir uma batida**")
     c1, c2, c3 = st.columns(3)
     carrier = float(c1.number_input("Carrier (Hz)", min_value=50.0, max_value=1000.0, value=220.0, step=1.0, key="bin_carrier",
-                                    help="Frequência base sobre a qual a batida acontece. 180–300 Hz costuma ser confortável."))
+                                    help="Frequência base. 180–300 Hz costuma ser confortável."))
     banda = c2.selectbox("Faixa de batida", list(BANDS.keys()) + ["Personalizada"], key="bin_banda",
-                         help="Escolha a faixa de intenção (alpha para relaxar, theta para aprofundar, etc.).")
+                         help="Escolha a faixa (alpha para relaxar, theta para aprofundar…).")
     if banda == "Personalizada":
         beat = float(c3.number_input("Batida (Hz)", min_value=0.5, max_value=40.0, value=7.0, step=0.5, key="bin_beat_custom",
-                                     help="Diferença L/R em Hz (a batida percebida)."))
+                                     help="Diferença L/R em Hz (batida percebida)."))
     else:
         lo, hi = BANDS[banda]
-        beat = float(c3.slider("Batida dentro da faixa", min_value=float(lo), max_value=float(hi), value=float((lo+hi)/2), step=0.5, key="bin_beat_range",
+        beat = float(c3.slider("Batida dentro da faixa", min_value=float(lo), max_value=float(hi),
+                               value=float((lo+hi)/2), step=0.5, key="bin_beat_range",
                                help="Ajuste a batida dentro da faixa selecionada."))
 
     d1, d2 = st.columns([0.5, 0.5])
     dur_binaural = int(d1.number_input("Duração (segundos)", min_value=10, max_value=600, value=30, step=5, key="bin_dur",
                                        help="Por quanto tempo tocar essa batida."))
     amp = float(d2.slider("Volume relativo", min_value=0.05, max_value=0.6, value=0.2, step=0.05, key="bin_amp",
-                          help="Volume do tom. Ajuste baixo e suba aos poucos."))
+                          help="Volume do tom. Comece baixo e ajuste."))
 
-    left_hz = max(1.0, carrier - beat/2)
-    right_hz = carrier + beat/2
+    left_hz = max(1.0, carrier - beat/2); right_hz = carrier + beat/2
     st.markdown(f'<div class="modern-card"><span class="badge">Left <span class="hz">{left_hz:.2f} Hz</span></span>'
                 f'<span class="badge">Right <span class="hz">{right_hz:.2f} Hz</span></span>'
                 f'<span class="badge">Carrier <span class="hz">{int(carrier)} Hz</span></span>'
                 f'<span class="badge">Batida <span class="hz">{beat:.2f} Hz</span></span></div>', unsafe_allow_html=True)
 
-    # Player binaural (WebAudio)
     from streamlit.components.v1 import html as st_html
     st.markdown("**Tocar esta batida (WebAudio, estéreo)**")
     st_html(webaudio_binaural_html(carrier, beat, seconds=dur_binaural), height=230)
 
-    # WAV estéreo (20s) para download/preview
     st.markdown("**Prévia WAV estéreo (20s)**")
     wav_bin = synth_binaural_wav(carrier, beat, seconds=20.0, sr=44100, amp=amp)
     colL, colR = st.columns([0.7, 0.3])
     with colL:
         st.audio(wav_bin, format="audio/wav", start_time=0)
-        st.caption("Use fones de ouvido para o efeito binaural.")
+        st.caption("Use fones para o efeito binaural.")
     with colR:
-        st.download_button(
-            "Baixar WAV binaural (20s)",
-            data=wav_bin,
-            file_name=f"binaural_{int(carrier)}Hz_{beat:.2f}Hz_20s.wav",
-            mime="audio/wav",
-            key="dl_bin_wav"
-        )
+        st.download_button("Baixar WAV binaural (20s)", data=wav_bin,
+                           file_name=f"binaural_{int(carrier)}Hz_{beat:.2f}Hz_20s.wav",
+                           mime="audio/wav", key="dl_bin_wav")
 
     st.divider()
-    # Passo B — Roteiro (robusto à versão do Streamlit)
     st.markdown("**Passo B — Montar roteiro (várias fases)**")
     st.markdown('<div class="help">Crie uma sequência de fases (batidas e durações). Ex.: relaxar (alpha) → aprofundar (theta) → integrar (alpha).</div>', unsafe_allow_html=True)
 
@@ -800,7 +727,7 @@ with tab6:
         {"fase":"Integração", "carrier_hz":carrier, "beat_hz":10.0, "duracao_min":10},
     ])
 
-    # === Data editor robusto a versões do Streamlit ===
+    # editor robusto a versões
     try:
         colcfg = None
         if hasattr(st, "column_config"):
@@ -811,55 +738,37 @@ with tab6:
                 "duracao_min": st.column_config.NumberColumn("Duração (min)", min_value=1, max_value=120, step=1),
             }
         roteiro = st.data_editor(
-            default_rows,
-            key="roteiro_binaural",
-            use_container_width=True,
-            num_rows="dynamic",           # algumas versões aceitam string
-            column_config=colcfg,         # pode ser None
+            default_rows, key="roteiro_binaural", use_container_width=True,
+            num_rows="dynamic", column_config=colcfg
         )
     except TypeError:
-        # fallback sem column_config/num_rows
-        roteiro = st.data_editor(
-            default_rows,
-            key="roteiro_binaural",
-            use_container_width=True,
-        )
+        roteiro = st.data_editor(default_rows, key="roteiro_binaural", use_container_width=True)
 
-    # Coerção de tipos e cálculo (à prova de strings)
     if not roteiro.empty:
         roteiro = roteiro.copy()
         for col in ["carrier_hz", "beat_hz", "duracao_min"]:
             roteiro[col] = pd.to_numeric(roteiro[col], errors="coerce")
-
         roteiro["carrier_hz"] = roteiro["carrier_hz"].fillna(carrier)
         roteiro["beat_hz"] = roteiro["beat_hz"].fillna(7.0)
         roteiro["duracao_min"] = roteiro["duracao_min"].fillna(5).astype(int)
-
         roteiro["left_hz"] = (roteiro["carrier_hz"] - roteiro["beat_hz"]/2).clip(lower=1.0)
         roteiro["right_hz"] = roteiro["carrier_hz"] + roteiro["beat_hz"]/2
         roteiro["duracao_seg"] = (roteiro["duracao_min"]*60).astype(int)
 
         st.markdown("**Roteiro calculado (L/R e duração em segundos)**")
-        st.dataframe(
-            roteiro[["fase","carrier_hz","beat_hz","left_hz","right_hz","duracao_min","duracao_seg"]],
-            use_container_width=True, hide_index=True
-        )
+        st.dataframe(roteiro[["fase","carrier_hz","beat_hz","left_hz","right_hz","duracao_min","duracao_seg"]],
+                     use_container_width=True, hide_index=True)
 
-        # Execução automática do roteiro
         fases = [
-            {
-                "label": f'{row["fase"]} — {row["beat_hz"]:.2f} Hz',
-                "left_hz": float(row["left_hz"]),
-                "right_hz": float(row["right_hz"]),
-                "dur": int(row["duracao_seg"])
-            }
+            {"label": f'{row["fase"]} — {row["beat_hz"]:.2f} Hz',
+             "left_hz": float(row["left_hz"]), "right_hz": float(row["right_hz"]),
+             "dur": int(row["duracao_seg"])}
             for _, row in roteiro.iterrows()
         ]
         st.markdown("**▶️ Tocar roteiro inteiro (WebAudio, estéreo)**")
         st_html(webaudio_playlist_binaural_html(fases), height=260)
 
-        # Exportar e salvar (opcional)
-        colx, coly, colz = st.columns(3)
+        colx, coly, _ = st.columns(3)
         colx.download_button("Baixar CSV do roteiro", roteiro.to_csv(index=False).encode("utf-8"),
                              file_name="roteiro_binaural.csv", mime="text/csv", key="dl_rot_csv")
         coly.download_button("Baixar JSON do roteiro", pd.DataFrame(fases).to_json(orient="records").encode("utf-8"),
@@ -882,10 +791,90 @@ with tab6:
                 except Exception as e:
                     st.error(f"Erro ao salvar roteiro: {e}")
 
-# ---------------- Plano Terapêutico ----------------
+# ---------------- Plano Terapêutico (com sugestões) ----------------
 with tab7:
     st.subheader("Plano Terapêutico")
-    st.markdown('<div class="help">Descreva o objetivo, faixas recomendadas e cadência. Você pode salvar como sessão ou exportar.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="help">Sugestões educativas (não substituem orientação médica). Ajuste sempre ao paciente.</div>', unsafe_allow_html=True)
+
+    # SUGESTÕES
+    st.markdown("### 🎯 Sugestões de planos")
+    nomes_tpl = ["— Selecione —"] + list(TEMPLATES.keys())
+    sel_tpl = st.selectbox("Escolha uma sugestão", nomes_tpl, index=0, key="tpl_select")
+
+    if sel_tpl != "— Selecione —":
+        tpl = TEMPLATES[sel_tpl]
+        st.markdown("#### Resumo da sugestão")
+        colA, colB, colC = st.columns(3)
+        colA.markdown(f"**Objetivo:** {tpl['objetivo']}")
+        colB.markdown(f"**Sessões:** {tpl['n_sessoes']} • **Cadência:** {tpl['cadencia']}")
+        colC.markdown("**Faixas:** " + ", ".join(tpl["faixas_recomendadas"]))
+        st.caption("Notas: " + tpl.get("notas",""))
+
+        df_rot = pd.DataFrame(tpl["roteiro_binaural"]).copy()
+        df_rot["left_hz"] = (df_rot["carrier_hz"] - df_rot["beat_hz"]/2).clip(lower=1.0)
+        df_rot["right_hz"] = df_rot["carrier_hz"] + df_rot["beat_hz"]/2
+        df_rot["duracao_seg"] = (df_rot["duracao_min"]*60).astype(int)
+
+        st.markdown("#### Roteiro binaural sugerido")
+        st.dataframe(df_rot[["fase","carrier_hz","beat_hz","left_hz","right_hz","duracao_min"]],
+                     use_container_width=True, hide_index=True)
+
+        fases = [
+            {"label": f'{row["fase"]} — {row["beat_hz"]:.2f} Hz',
+             "left_hz": float(row["left_hz"]), "right_hz": float(row["right_hz"]),
+             "dur": int(row["duracao_seg"])}
+            for _, row in df_rot.iterrows()
+        ]
+        from streamlit.components.v1 import html as st_html
+        st.markdown("**▶️ Tocar roteiro sugerido (WebAudio, estéreo)**")
+        st_html(webaudio_playlist_binaural_html(fases), height=260)
+
+        if tpl.get("frequencias_suporte"):
+            st.markdown("#### Frequências de suporte (puras)")
+            st.table(pd.DataFrame(tpl["frequencias_suporte"]))
+
+        plano_tpl = {
+            "objetivo": tpl["objetivo"],
+            "faixas_recomendadas": tpl["faixas_recomendadas"],
+            "n_sessoes": tpl["n_sessoes"],
+            "cadencia": tpl["cadencia"],
+            "bloco_sessao": [{"fase": x["fase"], "tipo":"binaural",
+                              "valor": f'{x["beat_hz"]} Hz @ carrier {x["carrier_hz"]} Hz',
+                              "dur_min": x["duracao_min"]} for x in tpl["roteiro_binaural"]],
+            "notas": tpl.get("notas","")
+        }
+
+        colx, coly, _ = st.columns(3)
+        colx.download_button("Baixar plano (JSON)",
+                             data=json.dumps(plano_tpl, ensure_ascii=False, indent=2).encode("utf-8"),
+                             file_name=f"plano_{sel_tpl.replace(' ','_')}.json",
+                             mime="application/json", key="tpl_dl_json")
+        coly.download_button("Baixar roteiro (CSV)",
+                             data=df_rot.to_csv(index=False).encode("utf-8"),
+                             file_name=f"roteiro_{sel_tpl.replace(' ','_')}.csv",
+                             mime="text/csv", key="tpl_dl_csv")
+
+        if sb:
+            if st.button("Salvar sugestão como sessão", type="primary", key="tpl_save_session"):
+                try:
+                    dur_total = int(df_rot["duracao_min"].sum())
+                    payload = {
+                        "patient_id": None,
+                        "data": datetime.utcnow().isoformat(),
+                        "duracao_min": dur_total,
+                        "intencao": sel_tpl,
+                        "chakra_alvo": None,
+                        "status": "plano",
+                        "protocolo": {"plano": plano_tpl, "roteiro_binaural": fases}
+                    }
+                    sb.table("sessions").insert([payload]).execute()
+                    st.success("Sugestão salva como sessão!")
+                except Exception as e:
+                    st.error(f"Erro ao salvar sessão: {e}")
+
+    st.divider()
+    # PLANO MANUAL
+    st.markdown("### ✍️ Montar plano manualmente")
     if not sb:
         st.info("Conecte o Supabase para salvar planos (ou exporte em CSV/JSON).")
 
@@ -908,7 +897,7 @@ with tab7:
 
     notas = st.text_area("Observações", placeholder="Ex.: combinar com respiração; evitar café; hidratar-se…", key="plan_notas")
 
-    st.markdown("**Estrutura sugerida de cada sessão**")
+    st.markdown("**Estrutura sugerida de cada sessão (exemplo)**")
     bloco = pd.DataFrame([
         {"fase":"Aterramento", "tipo":"frequência", "valor":"396 Hz", "dur_min":5},
         {"fase":"Trabalho principal", "tipo":"binaural", "valor":"Alpha 10 Hz", "dur_min":20},
@@ -924,7 +913,7 @@ with tab7:
     }
     st.dataframe(bloco, use_container_width=True, hide_index=True)
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, _ = st.columns(3)
     col1.download_button("Baixar plano (JSON)", data=json.dumps(plano, ensure_ascii=False, indent=2).encode("utf-8"),
                          file_name="plano_terapeutico.json", mime="application/json", key="dl_plan_json")
     col2.download_button("Baixar plano (CSV do bloco)", data=bloco.to_csv(index=False).encode("utf-8"),
