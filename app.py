@@ -1,21 +1,33 @@
-
 import os, json
 from datetime import datetime
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
 
+# =========================================================
+# Config inicial (credenciais via .env OU Streamlit Secrets)
+# =========================================================
 load_dotenv()
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+# lida com .env e com st.secrets (deploy Streamlit Cloud)
+SUPABASE_URL = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
+
+# Cliente Supabase (opcional – app funciona parcialmente sem conexão)
 try:
     from supabase import create_client
     sb = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 except Exception:
     sb = None
 
-st.set_page_config(page_title="Frequências • Cama de Cristal", layout="wide", initial_sidebar_state="collapsed")
+# =========================================================
+# Página / Estilos
+# =========================================================
+st.set_page_config(
+    page_title="Frequências • Cama de Cristal",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
 st.markdown("""
 <style>
@@ -25,10 +37,44 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# =========================================================
+# Dados estáticos / Mapas
+# =========================================================
+INTENCOES = {
+    "Relaxamento": {"base": ["SOL174","SOL432","CHAKRA_CARDIACO"]},
+    "Aterramento": {"base": ["SOL396","CHAKRA_RAIZ"]},
+    "Clareza mental": {"base": ["SOL741","CHAKRA_TERCEIRO_OLHO"]},
+    "Harmonização do coração": {"base": ["SOL528","SOL639","CHAKRA_CARDIACO"]},
+    "Limpeza/Desbloqueio": {"base": ["SOL417","SOL741"]},
+}
+
+CHAKRA_MAP = {
+    "Raiz":"raiz",
+    "Sacral":"sacral",
+    "Plexo":"plexo",
+    "Cardíaco":"cardiaco",
+    "Laríngeo":"laringeo",
+    "Terceiro Olho":"terceiro_olho",
+    "Coronal":"coronal",
+    "Nenhum":None
+}
+
+# =========================================================
+# Funções utilitárias
+# =========================================================
 def carregar_catalogo_freq() -> pd.DataFrame:
+    """
+    Tenta carregar o catálogo a partir do Supabase; se não houver conexão,
+    usa um fallback mínimo em memória.
+    """
     if sb:
-        data = sb.table("frequencies").select("*").execute().data
-        return pd.DataFrame(data)
+        try:
+            data = sb.table("frequencies").select("*").execute().data
+            return pd.DataFrame(data or [])
+        except Exception:
+            # Em caso de erro na consulta, evita quebrar a UI
+            return pd.DataFrame([])
+    # Fallback local (mínimo)
     return pd.DataFrame([
         {"code":"SOL174","nome":"Solfeggio 174 Hz","hz":174,"tipo":"solfeggio","chakra":None,"cor":None},
         {"code":"SOL396","nome":"Solfeggio 396 Hz","hz":396,"tipo":"solfeggio","chakra":"raiz","cor":"vermelho"},
@@ -44,30 +90,32 @@ def carregar_catalogo_freq() -> pd.DataFrame:
         {"code":"SOL432","nome":"Acorde 432 Hz","hz":432,"tipo":"custom","chakra":None,"cor":None},
     ])
 
-INTENCOES = {
-    "Relaxamento": {"base": ["SOL174","SOL432","CHAKRA_CARDIACO"]},
-    "Aterramento": {"base": ["SOL396","CHAKRA_RAIZ"]},
-    "Clareza mental": {"base": ["SOL741","CHAKRA_TERCEIRO_OLHO"]},
-    "Harmonização do coração": {"base": ["SOL528","SOL639","CHAKRA_CARDIACO"]},
-    "Limpeza/Desbloqueio": {"base": ["SOL417","SOL741"]},
-}
-
 def gerar_protocolo(intencao: str, chakra_alvo: str|None, duracao_min: int, catalogo: pd.DataFrame) -> pd.DataFrame:
+    """
+    Gera uma playlist com duração distribuída entre as frequências base da intenção.
+    Reforça o chakra alvo se estiver no catálogo.
+    """
     base = INTENCOES.get(intencao, {"base": []})
     sel = list(dict.fromkeys(base["base"]))  # sem repetição mantendo ordem
+
     if chakra_alvo:
         ccode = f"CHAKRA_{chakra_alvo.upper()}"
         if (catalogo["code"] == ccode).any() and ccode not in sel:
             sel.append(ccode)
+
     if not sel:
         sel = ["SOL432","SOL528"]
         sel = [c for c in sel if (catalogo["code"] == c).any()]
 
-    total = duracao_min * 60
+    total = max(1, int(duracao_min)) * 60
     bloco = max(90, total // max(1, len(sel)))
+
     linhas = []
     for i, code in enumerate(sel, start=1):
-        row = catalogo.loc[catalogo["code"] == code].iloc[0]
+        row = catalogo.loc[catalogo["code"] == code]
+        if row.empty:
+            continue
+        row = row.iloc[0]
         linhas.append({
             "ordem": i,
             "code": code,
@@ -77,33 +125,140 @@ def gerar_protocolo(intencao: str, chakra_alvo: str|None, duracao_min: int, cata
             "chakra": row.get("chakra"),
             "cor": row.get("cor")
         })
+
     usado = sum(l["duracao_seg"] for l in linhas)
     if linhas and usado < total:
         linhas[-1]["duracao_seg"] += total - usado
+
     return pd.DataFrame(linhas)
 
+# =========================================================
+# UI
+# =========================================================
 st.title("💫 Frequências — Cama de Cristal")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Gerador","Pacientes","Sessões","Catálogo","Admin"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Gerador", "Pacientes", "Sessões", "Catálogo", "Admin"])
 
+# ---------------- Gerador ----------------
 with tab1:
+    st.subheader("Gerar protocolo de frequências")
     catalogo = carregar_catalogo_freq()
+
     col1, col2, col3 = st.columns(3)
-    intencao = col1.selectbox("Intenção", list(INTENCOES.keys()))
-    chakra_map = {"Raiz":"raiz","Sacral":"sacral","Plexo":"plexo","Cardíaco":"cardiaco","Laríngeo":"laringeo","Terceiro Olho":"terceiro_olho","Coronal":"coronal","Nenhum":None}
-    chakra_label = col2.selectbox("Chakra alvo", list(chakra_map.keys()), index=7)
-    chakra_alvo = chakra_map[chakra_label]
-    duracao = int(col3.number_input("Duração (min)", 10, 120, 30, step=5))
+    intencao = col1.selectbox("Intenção", list(INTENCOES.keys()), key="ger_intencao")
+    chakra_label = col2.selectbox("Chakra alvo", list(CHAKRA_MAP.keys()), index=list(CHAKRA_MAP.keys()).index("Nenhum"), key="ger_chakra")
+    chakra_alvo = CHAKRA_MAP[chakra_label]
+    duracao = int(col3.number_input("Duração (min)", 10, 120, 30, step=5, key="ger_dur"))
 
-    if st.button("Gerar protocolo", type="primary"):
-        plano = gerar_protocolo(intencao, chakra_alvo, duracao, catalogo)
-        st.dataframe(plano, use_container_width=True, hide_index=True)
-        st.download_button("Baixar CSV", data=plano.to_csv(index=False).encode("utf-8"), file_name="protocolo.csv", mime="text/csv")
+    if st.button("Gerar protocolo", type="primary", key="btn_gerar_protocolo"):
+        if catalogo.empty or "code" not in catalogo.columns:
+            st.error("Catálogo vazio ou inválido. Vá na aba **Admin** e importe o `seed_frequencies.csv`.")
+        else:
+            plano = gerar_protocolo(intencao, chakra_alvo, duracao, catalogo)
+            if plano.empty:
+                st.warning("Não foi possível montar a playlist com as frequências atuais do catálogo.")
+            else:
+                st.dataframe(plano, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Baixar CSV",
+                    data=plano.to_csv(index=False).encode("utf-8"),
+                    file_name="protocolo.csv",
+                    mime="text/csv",
+                    key="btn_dl_protocolo"
+                )
 
+# ---------------- Pacientes ----------------
+with tab2:
+    st.subheader("Pacientes")
+    if not sb:
+        st.info("Conecte seu Supabase (defina SUPABASE_URL e SUPABASE_KEY) para ativar cadastros.")
+    else:
+        with st.form("pac_form"):
+            nome = st.text_input("Nome", key="pac_nome")
+            nasc = st.date_input("Nascimento", value=None, key="pac_nasc")
+            notas = st.text_area("Notas", key="pac_notas")
+            if st.form_submit_button("Salvar", use_container_width=False):
+                if nome.strip():
+                    try:
+                        sb.table("patients").insert([{
+                            "nome": nome.strip(),
+                            "nascimento": str(nasc) if nasc else None,
+                            "notas": notas
+                        }]).execute()
+                        st.success("Paciente salvo!")
+                    except Exception as e:
+                        st.error(f"Erro ao salvar paciente: {e}")
+                else:
+                    st.warning("Informe o nome do paciente.")
+
+        try:
+            pats = sb.table("patients").select("*").order("created_at", desc=True).execute().data
+        except Exception:
+            pats = []
+        if pats:
+            st.dataframe(pd.DataFrame(pats)[["nome","nascimento","notas","created_at"]], use_container_width=True, hide_index=True)
+        else:
+            st.caption("Nenhum paciente cadastrado ainda.")
+
+# ---------------- Sessões ----------------
+with tab3:
+    st.subheader("Sessões")
+    if not sb:
+        st.info("Conecte o Supabase para salvar sessões.")
+    else:
+        try:
+            pats = sb.table("patients").select("id,nome").execute().data
+        except Exception:
+            pats = []
+
+        mapa = {p["nome"]: p["id"] for p in (pats or [])}
+        nome = st.selectbox("Paciente", list(mapa.keys()) if mapa else ["—"], key="sess_paciente")
+
+        catalogo = carregar_catalogo_freq()
+        intencao2 = st.selectbox("Intenção", list(INTENCOES.keys()), key="sess_intencao")
+        chakra_label2 = st.selectbox("Chakra alvo", list(CHAKRA_MAP.keys()), index=list(CHAKRA_MAP.keys()).index("Nenhum"), key="sess_chakra")
+        chakra_alvo2 = CHAKRA_MAP[chakra_label2]
+        dur2 = int(st.number_input("Duração (min)", 10, 120, 30, step=5, key="sess_dur"))
+
+        if st.button("Gerar + salvar", type="primary", key="sess_btn_salvar"):
+            if not mapa:
+                st.warning("Cadastre pelo menos um paciente na aba **Pacientes**.")
+            elif catalogo.empty or "code" not in catalogo.columns:
+                st.error("Catálogo vazio ou inválido. Importe o seed na aba **Admin**.")
+            else:
+                plano = gerar_protocolo(intencao2, chakra_alvo2, dur2, catalogo)
+                payload = {
+                    "patient_id": mapa.get(nome),
+                    "data": datetime.utcnow().isoformat(),
+                    "duracao_min": dur2,
+                    "intencao": intencao2,
+                    "chakra_alvo": chakra_alvo2,
+                    "status": "rascunho",
+                    "protocolo": json.loads(plano.to_json(orient="records"))
+                }
+                try:
+                    s = sb.table("sessions").insert([payload]).execute().data
+                    if s:
+                        st.success("Sessão criada!")
+                    else:
+                        st.error("Falha ao criar sessão.")
+                except Exception as e:
+                    st.error(f"Erro ao criar sessão: {e}")
+
+        # listar sessões
+        try:
+            sess = sb.table("sessions").select("id,data,intencao,duracao_min,status").order("created_at", desc=True).execute().data
+        except Exception:
+            sess = []
+        if sess:
+            st.dataframe(pd.DataFrame(sess), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Nenhuma sessão registrada ainda.")
+
+# ---------------- Catálogo ----------------
 with tab4:
     st.subheader("Catálogo")
     df = carregar_catalogo_freq()
-
     expected = ["code","nome","hz","tipo","chakra","cor"]
     has_cols = set(expected).issubset(df.columns)
 
@@ -118,79 +273,40 @@ with tab4:
     else:
         st.dataframe(df[expected], use_container_width=True, hide_index=True)
 
-with tab2:
-    st.subheader("Pacientes")
-    if not sb:
-        st.info("Conecte seu Supabase em .env para ativar cadastros.")
-    else:
-        with st.form("pac"):
-            nome = st.text_input("Nome")
-            nasc = st.date_input("Nascimento", value=None)
-            notas = st.text_area("Notas")
-            if st.form_submit_button("Salvar"):
-                sb.table("patients").insert([{"nome":nome, "nascimento": str(nasc) if nasc else None, "notas": notas}]).execute()
-                st.success("Paciente salvo!")
-        pats = sb.table("patients").select("*").order("created_at", desc=True).execute().data
-        if pats:
-            st.dataframe(pd.DataFrame(pats)[["nome","nascimento","notas","created_at"]], use_container_width=True, hide_index=True)
-
-with tab3:
-    st.subheader("Sessões")
-    if not sb:
-        st.info("Conecte o Supabase para salvar sessões.")
-    else:
-        pats = sb.table("patients").select("id,nome").execute().data
-        mapa = {p["nome"]: p["id"] for p in pats} if pats else {}
-        nome = st.selectbox("Paciente", list(mapa.keys()) if mapa else ["—"])
-        catalogo = carregar_catalogo_freq()
-        intencao2 = st.selectbox("Intenção", list(INTENCOES.keys()))
-        chakra_label2 = st.selectbox("Chakra alvo", list(chakra_map.keys()), index=7)
-        chakra_alvo2 = chakra_map[chakra_label2]
-        dur2 = int(st.number_input("Duração (min)", 10, 120, 30, step=5))
-        if st.button("Gerar + salvar", type="primary"):
-            plano = gerar_protocolo(intencao2, chakra_alvo2, dur2, catalogo)
-            payload = {
-                "patient_id": mapa.get(nome),
-                "data": datetime.utcnow().isoformat(),
-                "duracao_min": dur2,
-                "intencao": intencao2,
-                "chakra_alvo": chakra_alvo2,
-                "status": "rascunho",
-                "protocolo": json.loads(plano.to_json(orient="records"))
-            }
-            s = sb.table("sessions").insert([payload]).execute().data
-            st.success("Sessão criada!" if s else "Falha ao criar sessão.")
-        # listar
-        sess = sb.table("sessions").select("id,data,intencao,duracao_min,status").order("created_at", desc=True).execute().data
-        if sess:
-            st.dataframe(pd.DataFrame(sess), use_container_width=True, hide_index=True)
-
+# ---------------- Admin ----------------
 with tab5:
     st.subheader("Admin")
     st.caption("Importe `seed_frequencies.csv` para a tabela `frequencies`.")
-    up = st.file_uploader("seed_frequencies.csv", type=["csv"])
-    if up and sb and st.button("Importar agora"):
-        df = pd.read_csv(up)
+    st.code(f"URL set? {bool(SUPABASE_URL)} | KEY set? {bool(SUPABASE_KEY)} | Client? {bool(sb)}")
 
-        # Converte strings vazias para None (NULL no Postgres)
-        for col in ["chakra", "cor", "descricao", "code", "nome"]:
-            if col in df.columns:
-                df[col] = df[col].replace({"": None})
+    up = st.file_uploader("seed_frequencies.csv", type=["csv"], key="admin_seed_upload")
+    if up and sb and st.button("Importar agora", key="admin_btn_importar"):
+        try:
+            df = pd.read_csv(up)
 
-        # Converte hz para número
-        if "hz" in df.columns:
-            df["hz"] = pd.to_numeric(df["hz"], errors="coerce")
+            # Converte strings vazias para None (NULL no Postgres)
+            for col in ["chakra", "cor", "descricao", "code", "nome"]:
+                if col in df.columns:
+                    df[col] = df[col].replace({"": None})
 
-        # Converte tipo para um dos enums válidos
-        if "tipo" in df.columns:
-            df["tipo"] = df["tipo"].str.lower().replace({"color":"cor"})
+            # Converte hz para número
+            if "hz" in df.columns:
+                df["hz"] = pd.to_numeric(df["hz"], errors="coerce")
 
-        rows = df.to_dict(orient="records")
-        ok, fail = 0, 0
-        for r in rows:
-            try:
-                sb.table("frequencies").upsert(r).execute()
-                ok += 1
-            except Exception as e:
-                fail += 1
-        st.success(f"Importadas/atualizadas: {ok}. Falhas: {fail}.")
+            # Converte tipo para um dos enums válidos
+            if "tipo" in df.columns and df["tipo"].dtype == object:
+                df["tipo"] = df["tipo"].str.lower().replace({"color":"cor"})
+
+            rows = df.to_dict(orient="records")
+            ok, fail = 0, 0
+            for r in rows:
+                try:
+                    sb.table("frequencies").upsert(r).execute()
+                    ok += 1
+                except Exception:
+                    fail += 1
+            st.success(f"Importadas/atualizadas: {ok}. Falhas: {fail}.")
+        except Exception as e:
+            st.error(f"Erro ao importar seed: {e}")
+    elif not sb:
+        st.warning("Defina SUPABASE_URL e SUPABASE_KEY para habilitar a importação.")
