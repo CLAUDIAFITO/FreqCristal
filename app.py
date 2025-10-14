@@ -302,29 +302,57 @@ document.getElementById("s_stop").onclick=stopAll;
 """
 
 def webaudio_binaural_html(carrier_hz: float, beat_hz: float, seconds: int = 20) -> str:
-    fc=float(carrier_hz); bt=abs(float(beat_hz)); fl=Math.max(1.0, fc-bt/2.0); fr=fc+bt/2.0
-    # (js usa Math.*, então calculamos no JS)
+    fc = float(carrier_hz)
+    bt = abs(float(beat_hz))
+    fl = max(1.0, fc - bt/2.0)  # calcula em Python
+    fr = fc + bt/2.0            # calcula em Python
+
     return f"""
 <div class="modern-card">
   <div class="section-title">Binaural (L/R)</div>
   <div class="help">Use <b>fones</b>. O efeito é a diferença entre os ouvidos. Batida = {bt:.2f} Hz.</div>
   <div style="margin:.25rem 0;">
-    <span class="badge">Left/Right definidos abaixo</span>
+    <span class="badge">Left <span class="hz">{fl:.2f} Hz</span></span>
+    <span class="badge">Right <span class="hz">{fr:.2f} Hz</span></span>
+    <span class="badge">Carrier <span class="hz">{int(fc)} Hz</span></span>
   </div>
   <div class="controls" style="margin-top:.5rem;">
-    <button id="b_play">▶️ Play</button><button id="b_stop">⏹️ Stop</button>
+    <button id="b_play">▶️ Play</button>
+    <button id="b_stop">⏹️ Stop</button>
   </div>
   <div id="b_status" class="help"></div>
 </div>
 <script>
 let ctx=null,oscL=null,oscR=null,gainL=null,gainR=null,merger=null,timer=null;
-const sec={int(seconds)}, fc={float(carrier_hz)}, bt={float(abs(beat_hz))};
-const fL=Math.max(1.0, fc-bt/2.0), fR=fc+bt/2.0;
-function stopAll(){{ if(timer){{clearTimeout(timer);timer=null;}} [oscL,oscR].forEach(o=>{{if(o) try{{o.stop();}}catch(e){{}}}}); [oscL,oscR,gainL,gainR].forEach(n=>{{if(n)n.disconnect();}}); oscL=oscR=gainL=gainR=merger=null; document.getElementById("b_status").textContent="Parado."; }}
-document.getElementById("b_play").onclick=()=>{{ stopAll(); if(!ctx) ctx=new (window.AudioContext||window.webkitAudioContext)(); oscL=ctx.createOscillator(); oscL.type="sine"; oscL.frequency.value=fL; oscR=ctx.createOscillator(); oscR.type="sine"; oscR.frequency.value=fR; gainL=ctx.createGain(); gainR=ctx.createGain(); gainL.gain.setValueAtTime(0.0001,ctx.currentTime); gainR.gain.setValueAtTime(0.0001,ctx.currentTime); gainL.gain.exponentialRampToValueAtTime(0.2,ctx.currentTime+0.05); gainR.gain.exponentialRampToValueAtTime(0.2,ctx.currentTime+0.05); merger=ctx.createChannelMerger(2); oscL.connect(gainL).connect(merger,0,0); oscR.connect(gainR).connect(merger,0,1); merger.connect(ctx.destination); oscL.start(); oscR.start(); document.getElementById("b_status").textContent=`L ${'{'}fL.toFixed(2){'}'} Hz | R ${'{'}fR.toFixed(2){'}'} Hz`; timer=setTimeout(()=>stopAll(), sec*1000); }};
-document.getElementById("b_stop").onclick=stopAll;
+const sec={int(seconds)}, fL={fl}, fR={fr};
+function stopAll(){{
+  if(timer){{clearTimeout(timer);timer=null;}}
+  [oscL,oscR].forEach(o=>{{if(o) try{{o.stop();}}catch(e){{}}}});
+  [oscL,oscR,gainL,gainR].forEach(n=>{{if(n)n.disconnect();}});
+  oscL=oscR=gainL=gainR=merger=null;
+  document.getElementById("b_status").textContent="Parado.";
+}}
+document.getElementById("b_play").onclick=()=>{{
+  stopAll(); if(!ctx) ctx=new (window.AudioContext||window.webkitAudioContext)();
+  oscL=ctx.createOscillator(); oscL.type="sine"; oscL.frequency.value=fL;
+  oscR=ctx.createOscillator(); oscR.type="sine"; oscR.frequency.value=fR;
+  gainL=ctx.createGain(); gainR=ctx.createGain();
+  gainL.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gainR.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gainL.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
+  gainR.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
+  merger=ctx.createChannelMerger(2);
+  oscL.connect(gainL).connect(merger,0,0);
+  oscR.connect(gainR).connect(merger,0,1);
+  merger.connect(ctx.destination);
+  oscL.start(); oscR.start();
+  document.getElementById("b_status").textContent=`L ${'{'}fL.toFixed(2){'}'} Hz | R ${'{'}fR.toFixed(2){'}'} Hz`;
+  timer=setTimeout(()=>stopAll(), sec*1000);
+}};
+document.getElementById("b_stop").onclick=()=>stopAll();
 </script>
 """
+
 
 def webaudio_playlist_binaural_html(fases: list) -> str:
     data = json.dumps(fases)
