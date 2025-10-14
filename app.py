@@ -30,10 +30,11 @@ st.set_page_config(
 st.markdown("""
 <style>
 .main .block-container { padding-top: 1rem; padding-bottom: 1rem; }
-.modern-card { background: white; padding: 1.25rem; border-radius: 14px; 
+.modern-card { background: white; padding: 1.25rem; border-radius: 14px;
                box-shadow: 0 6px 18px rgba(0,0,0,.07); border: 1px solid #eef; }
 .controls button { margin-right: .5rem; }
 .badge { display:inline-block; padding:.15rem .5rem; border-radius:999px; background:#f2f6ff; border:1px solid #e5eaff; font-size:.8rem; margin-right:.25rem; }
+.help { color:#667; font-size:.9rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -57,6 +58,14 @@ CHAKRA_MAP = {
     "Terceiro Olho":"terceiro_olho",
     "Coronal":"coronal",
     "Nenhum":None
+}
+
+BANDS = {  # faixas típicas de batida binaural
+    "Delta (1–4 Hz)": (1.0, 4.0),
+    "Theta (4–8 Hz)": (4.0, 8.0),
+    "Alpha (8–12 Hz)": (8.0, 12.0),
+    "Beta (12–30 Hz)": (12.0, 30.0),
+    "Gamma (30–40 Hz)": (30.0, 40.0)
 }
 
 # =========================================================
@@ -141,8 +150,42 @@ def synth_tone_wav(freq: float, seconds: float = 20.0, sr: int = 22050, amp: flo
         wf.writeframes(y_int16.tobytes())
     return buf.getvalue()
 
+def synth_binaural_wav(carrier_hz: float, beat_hz: float, seconds: float = 20.0,
+                       sr: int = 44100, amp: float = 0.2) -> bytes:
+    """
+    Gera WAV estéreo 16-bit com batida binaural:
+    L = carrier - beat/2 | R = carrier + beat/2
+    """
+    beat_hz = abs(float(beat_hz))
+    fc = float(carrier_hz)
+    fl = max(1.0, fc - beat_hz/2.0)
+    fr = fc + beat_hz/2.0
+
+    t = np.linspace(0, seconds, int(sr*seconds), endpoint=False)
+    left = np.sin(2*np.pi*fl*t)
+    right = np.sin(2*np.pi*fr*t)
+
+    # fade-in/out de 10ms
+    ramp = max(1, int(sr * 0.01))
+    env = np.ones_like(left)
+    env[:ramp] = np.linspace(0, 1, ramp)
+    env[-ramp:] = np.linspace(1, 0, ramp)
+    left = left * env * amp
+    right = right * env * amp
+
+    stereo = np.vstack([left, right]).T
+    y_int16 = np.int16(np.clip(stereo, -1, 1) * 32767)
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(y_int16.tobytes())
+    return buf.getvalue()
+
 def webaudio_player_html(plano: pd.DataFrame) -> str:
-    """Player WebAudio para tocar a sequência inteira no navegador."""
+    """Player WebAudio para tocar a sequência inteira (mono) no navegador."""
     items = [
         {"hz": float(r["hz"]), "dur": int(r["duracao_seg"]), "label": f'{int(r["hz"])} Hz — {r["nome"] or r["code"]}'}
         for _, r in plano.iterrows()
@@ -243,7 +286,7 @@ updateStatus();
     return html
 
 def webaudio_single_html(freq_hz: float, seconds: int = 20) -> str:
-    """Player WebAudio para tocar UMA frequência por X segundos."""
+    """Player WebAudio para tocar UMA frequência (mono) por X segundos."""
     return f"""
 <div class="modern-card">
   <div><strong>{int(freq_hz)} Hz</strong> — tocar no navegador (WebAudio)</div>
@@ -281,12 +324,71 @@ document.getElementById("s_stop").onclick = () => stopAll();
 </script>
 """
 
+def webaudio_binaural_html(carrier_hz: float, beat_hz: float, seconds: int = 20) -> str:
+    """
+    Player WebAudio estéreo: junta dois osciladores em canais L/R com ChannelMergerNode.
+    L = carrier - beat/2 | R = carrier + beat/2
+    """
+    fc = float(carrier_hz)
+    bt = abs(float(beat_hz))
+    fl = max(1.0, fc - bt/2.0)
+    fr = fc + bt/2.0
+    return f"""
+<div class="modern-card">
+  <div><strong>Binaural:</strong> {int(fc)} Hz ± {bt/2:.2f} → batida {bt:.2f} Hz</div>
+  <div class="controls" style="margin-top:.5rem;">
+    <button id="b_play">▶️ Play</button>
+    <button id="b_stop">⏹️ Stop</button>
+  </div>
+  <div id="b_status" class="help"></div>
+</div>
+<script>
+let ctx=null, oscL=null, oscR=null, gainL=null, gainR=null, merger=null, timer=null;
+const sec = {int(seconds)};
+const fL = {float(fl)};
+const fR = {float(fr)};
+
+function stopAll(){{
+  if (timer) {{ clearTimeout(timer); timer=null; }}
+  [oscL, oscR].forEach(o => {{ if (o) try{{o.stop();}}catch(e){{}} }});
+  [oscL, oscR, gainL, gainR].forEach(n => {{ if(n) n.disconnect(); }});
+  oscL=oscR=gainL=gainR=merger=null;
+  document.getElementById("b_status").textContent = "Parado.";
+}}
+
+document.getElementById("b_play").onclick = () => {{
+  stopAll();
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+  oscL = ctx.createOscillator(); oscL.type="sine"; oscL.frequency.value=fL;
+  oscR = ctx.createOscillator(); oscR.type="sine"; oscR.frequency.value=fR;
+  gainL = ctx.createGain(); gainR = ctx.createGain();
+  gainL.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gainR.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gainL.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
+  gainR.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
+
+  merger = ctx.createChannelMerger(2);
+  oscL.connect(gainL).connect(merger, 0, 0); // L no canal 0
+  oscR.connect(gainR).connect(merger, 0, 1); // R no canal 1
+  merger.connect(ctx.destination);
+
+  oscL.start(); oscR.start();
+  document.getElementById("b_status").textContent = "Tocando (L="+fL.toFixed(2)+" Hz | R="+fR.toFixed(2)+" Hz)";
+  timer = setTimeout(() => stopAll(), sec*1000);
+}};
+document.getElementById("b_stop").onclick = () => stopAll();
+</script>
+"""
+
 # =========================================================
 # UI
 # =========================================================
 st.title("💫 Frequências — Cama de Cristal")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Gerador", "Pacientes", "Sessões", "Catálogo", "Admin"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+    ["Gerador", "Pacientes", "Sessões", "Catálogo", "Admin", "Binaurais", "Plano Terapêutico"]
+)
 
 # ---------------- Gerador ----------------
 with tab1:
@@ -316,24 +418,18 @@ with tab1:
                 st.markdown("#### ▶️ Tocar protocolo no navegador (WebAudio)")
                 st_html(webaudio_player_html(plano), height=260)
 
-                # Selecionar e tocar UMA frequência do protocolo (label -> hz)
+                # Selecionar e tocar UMA frequência (label -> hz)
                 st.markdown("#### 🔎 Tocar frequência específica do protocolo")
-                opcoes_labels = []
-                label_to_hz = {}
+                opcoes_labels, label_to_hz = [], {}
                 for i, r in enumerate(plano.itertuples(index=False), start=1):
                     hz = float(getattr(r, "hz"))
                     nome = getattr(r, "nome") or getattr(r, "code")
                     label = f"{int(hz)} Hz — {nome}"
                     if label in label_to_hz:
-                        label = f"{label} (#{i})"  # garante unicidade
-                    opcoes_labels.append(label)
-                    label_to_hz[label] = hz
+                        label = f"{label} (#{i})"
+                    opcoes_labels.append(label); label_to_hz[label] = hz
 
-                sel_label = st.selectbox(
-                    "Escolha a etapa (uma frequência)",
-                    opcoes_labels,
-                    key="play_sel_protocolo"
-                )
+                sel_label = st.selectbox("Escolha a etapa (uma frequência)", opcoes_labels, key="play_sel_protocolo")
                 hz_escolhido = label_to_hz[sel_label]
 
                 colA, colB = st.columns([0.6, 0.4])
@@ -349,7 +445,7 @@ with tab1:
                         key="dl_wav_freq_unica"
                     )
 
-                # Prévias em WAV para cada etapa
+                # Prévias WAV por etapa
                 st.markdown("#### 🎧 Prévias em WAV (20s por etapa)")
                 for _, r in plano.iterrows():
                     hz = float(r["hz"])
@@ -482,29 +578,14 @@ with tab4:
             label_to_hz = {}
             for i, row in enumerate(df_ok.itertuples(index=False), start=1):
                 hz = float(getattr(row, "hz"))
-                # getattr(row, "nome", None) não funciona em namedtuple: usamos lógica abaixo
-                try:
-                    nome = getattr(row, "nome")
-                except Exception:
-                    # fallback usando índice de colunas
-                    nome = df_ok.columns[df_ok.columns.get_loc("nome")] if "nome" in df_ok.columns else None
-                if not nome:
-                    try:
-                        code_val = getattr(row, "code")
-                    except Exception:
-                        code_val = ""
-                    nome = code_val
+                nome = getattr(row, "nome", None) or getattr(row, "code", "")
                 label = f"{int(hz)} Hz — {nome}"
                 if label in label_to_hz:
                     label = f"{label} (#{i})"
                 labels.append(label)
                 label_to_hz[label] = hz
 
-            sel_cat = st.selectbox(
-                "Escolha uma frequência do catálogo",
-                labels,
-                key="play_sel_catalogo"
-            )
+            sel_cat = st.selectbox("Escolha uma frequência do catálogo", labels, key="play_sel_catalogo")
             hz_cat = label_to_hz[sel_cat]
 
             from streamlit.components.v1 import html as st_html
@@ -544,8 +625,7 @@ with tab5:
             # Normaliza 'tipo' para ENUM válido
             if "tipo" in df.columns and df["tipo"].dtype == object:
                 df["tipo"] = (
-                    df["tipo"].str.strip().str.lower()
-                    .replace({"color": "cor"})
+                    df["tipo"].str.strip().str.lower().replace({"color": "cor"})
                 )
 
             rows = df.to_dict(orient="records")
@@ -568,3 +648,140 @@ with tab5:
             st.error(f"Erro ao importar seed: {e}")
     elif not sb:
         st.warning("Defina SUPABASE_URL e SUPABASE_KEY para habilitar a importação.")
+
+# ---------------- Binaurais ----------------
+with tab6:
+    st.subheader("Batidas Binaurais — criação rápida")
+
+    c1, c2, c3 = st.columns(3)
+    carrier = float(c1.number_input("Carrier (Hz)", min_value=50.0, max_value=1000.0, value=220.0, step=1.0, key="bin_carrier"))
+    banda = c2.selectbox("Faixa de batida", list(BANDS.keys()) + ["Personalizada"], key="bin_banda")
+    if banda == "Personalizada":
+        beat = float(c3.number_input("Batida (Hz)", min_value=0.5, max_value=40.0, value=7.0, step=0.5, key="bin_beat_custom"))
+    else:
+        lo, hi = BANDS[banda]
+        beat = float(c3.slider("Batida dentro da faixa", min_value=float(lo), max_value=float(hi), value=float((lo+hi)/2), step=0.5, key="bin_beat_range"))
+
+    d1, d2 = st.columns([0.5, 0.5])
+    dur_binaural = int(d1.number_input("Duração (segundos)", min_value=10, max_value=600, value=30, step=5, key="bin_dur"))
+    amp = float(d2.slider("Volume relativo", min_value=0.05, max_value=0.6, value=0.2, step=0.05, key="bin_amp"))
+
+    st.caption(f"L/R = {carrier - beat/2:.2f} Hz / {carrier + beat/2:.2f} Hz  •  Batida = {beat:.2f} Hz")
+
+    # Player binaural (WebAudio)
+    from streamlit.components.v1 import html as st_html
+    st.markdown("#### ▶️ Tocar binaural (WebAudio, estéreo)")
+    st_html(webaudio_binaural_html(carrier, beat, seconds=dur_binaural), height=220)
+
+    # WAV estéreo (20s) para download/preview
+    st.markdown("#### 🎧 Prévia WAV estéreo (20s)")
+    wav_bin = synth_binaural_wav(carrier, beat, seconds=20.0, sr=44100, amp=amp)
+    colL, colR = st.columns([0.7, 0.3])
+    with colL:
+        st.audio(wav_bin, format="audio/wav", start_time=0)
+        st.caption("Use fones de ouvido para o efeito binaural.")
+    with colR:
+        st.download_button(
+            "Baixar WAV binaural (20s)",
+            data=wav_bin,
+            file_name=f"binaural_{int(carrier)}Hz_{beat:.2f}Hz_20s.wav",
+            mime="audio/wav",
+            key="dl_bin_wav"
+        )
+
+    st.divider()
+    st.markdown("### 🧭 Roteiro binaural (várias fases)")
+    st.caption("Monte uma sequência de fases (batida/duração). Ex.: Relaxar (alpha) → Aprofundar (theta) → Integrar (alpha).")
+
+    default_rows = pd.DataFrame([
+        {"fase":"Chegada/Relaxamento", "carrier_hz":carrier, "beat_hz":10.0, "duracao_min":5},
+        {"fase":"Aprofundamento", "carrier_hz":carrier, "beat_hz":6.0, "duracao_min":15},
+        {"fase":"Integração", "carrier_hz":carrier, "beat_hz":10.0, "duracao_min":10},
+    ])
+    roteiro = st.data_editor(
+        default_rows,
+        key="roteiro_binaural",
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "fase": st.column_config.TextColumn("Fase"),
+            "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", min_value=50.0, max_value=1000.0, step=1.0),
+            "beat_hz": st.column_config.NumberColumn("Batida (Hz)", min_value=0.5, max_value=40.0, step=0.5),
+            "duracao_min": st.column_config.NumberColumn("Duração (min)", min_value=1, max_value=120, step=1),
+        }
+    )
+    if not roteiro.empty:
+        roteiro = roteiro.copy()
+        roteiro["left_hz"] = (roteiro["carrier_hz"] - roteiro["beat_hz"]/2).clip(lower=1.0)
+        roteiro["right_hz"] = roteiro["carrier_hz"] + roteiro["beat_hz"]/2
+        st.dataframe(roteiro, use_container_width=True, hide_index=True)
+
+        # Exportações
+        colx, coly, colz = st.columns(3)
+        colx.download_button("Baixar CSV do roteiro", roteiro.to_csv(index=False).encode("utf-8"),
+                             file_name="roteiro_binaural.csv", mime="text/csv", key="dl_rot_csv")
+        coly.download_button("Baixar JSON do roteiro", roteiro.to_json(orient="records").encode("utf-8"),
+                             file_name="roteiro_binaural.json", mime="application/json", key="dl_rot_json")
+
+# ---------------- Plano Terapêutico ----------------
+with tab7:
+    st.subheader("Plano Terapêutico")
+    if not sb:
+        st.info("Conecte o Supabase para salvar planos (ou exporte em CSV/JSON).")
+    # Seleção paciente (se houver)
+    patients_map = {}
+    if sb:
+        try:
+            pats = sb.table("patients").select("id,nome").order("created_at", desc=True).execute().data
+            patients_map = {p["nome"]: p["id"] for p in (pats or [])}
+        except Exception:
+            patients_map = {}
+    nome_pac = st.selectbox("Paciente (opcional)", list(patients_map.keys()) if patients_map else ["—"], key="plan_paciente")
+
+    colA, colB = st.columns(2)
+    objetivo = colA.text_input("Objetivo terapêutico", placeholder="Ex.: Harmonizar ansiedade, melhorar foco…", key="plan_obj")
+    faixa_rec = colB.multiselect("Faixas recomendadas", list(BANDS.keys()), default=["Alpha (8–12 Hz)"], key="plan_bands")
+
+    colC, colD = st.columns(2)
+    n_sessoes = int(colC.number_input("Número de sessões", min_value=1, max_value=24, value=6, step=1, key="plan_nsess"))
+    cad = colD.selectbox("Cadência", ["1x/semana", "2x/semana", "3x/semana", "Diária"], index=0, key="plan_cad")
+
+    notas = st.text_area("Observações", placeholder="Ex.: combinar com respiração; evitar café; hidratar-se…", key="plan_notas")
+
+    st.markdown("#### Estrutura sugerida de cada sessão")
+    bloco = pd.DataFrame([
+        {"fase":"Aterramento", "tipo":"frequência", "valor":"396 Hz", "dur_min":5},
+        {"fase":"Trabalho principal", "tipo":"binaural", "valor":"Alpha 10 Hz", "dur_min":20},
+        {"fase":"Integração", "tipo":"frequência", "valor":"528/639 Hz", "dur_min":10},
+    ])
+    plano = {
+        "objetivo": objetivo,
+        "faixas_recomendadas": faixa_rec,
+        "n_sessoes": n_sessoes,
+        "cadencia": cad,
+        "bloco_sessao": bloco.to_dict(orient="records"),
+        "notas": notas
+    }
+    st.dataframe(bloco, use_container_width=True, hide_index=True)
+
+    col1, col2, col3 = st.columns(3)
+    col1.download_button("Baixar plano (JSON)", data=json.dumps(plano, ensure_ascii=False, indent=2).encode("utf-8"),
+                         file_name="plano_terapeutico.json", mime="application/json", key="dl_plan_json")
+    col2.download_button("Baixar plano (CSV do bloco)", data=bloco.to_csv(index=False).encode("utf-8"),
+                         file_name="plano_terapeutico_bloco.csv", mime="text/csv", key="dl_plan_csv")
+
+    if sb and st.button("Salvar como sessão (status=plano)", type="primary", key="btn_salvar_plano"):
+        payload = {
+            "patient_id": patients_map.get(nome_pac) if patients_map else None,
+            "data": datetime.utcnow().isoformat(),
+            "duracao_min": sum(int(x["dur_min"]) for x in plano["bloco_sessao"]),
+            "intencao": objetivo or "Plano Terapêutico",
+            "chakra_alvo": None,
+            "status": "plano",
+            "protocolo": plano
+        }
+        try:
+            sb.table("sessions").insert([payload]).execute()
+            st.success("Plano salvo como sessão (status=plano)!")
+        except Exception as e:
+            st.error(f"Erro ao salvar plano: {e}")
