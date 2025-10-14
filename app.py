@@ -29,12 +29,15 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-.main .block-container { padding-top: 1rem; padding-bottom: 1rem; }
-.modern-card { background: white; padding: 1.25rem; border-radius: 14px;
-               box-shadow: 0 6px 18px rgba(0,0,0,.07); border: 1px solid #eef; }
-.controls button { margin-right: .5rem; }
-.badge { display:inline-block; padding:.15rem .5rem; border-radius:999px; background:#f2f6ff; border:1px solid #e5eaff; font-size:.8rem; margin-right:.25rem; }
-.help { color:#667; font-size:.9rem; }
+.main .block-container { padding-top: 0.5rem; padding-bottom: 1rem; }
+.modern-card { background: white; padding: 1rem 1.25rem; border-radius: 14px;
+               box-shadow: 0 6px 18px rgba(0,0,0,.07); border: 1px solid #eef; margin-bottom: 0.75rem; }
+.help { color:#556; font-size:.92rem; }
+.kbd { display:inline-block; padding:0 .35rem; border-radius:4px; border:1px solid #ccd; background:#f8fafc; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
+.badge { display:inline-block; padding:.3rem .55rem; border-radius:999px; background:#f2f6ff; border:1px solid #e5eaff; font-size:.86rem; margin-right:.35rem; }
+.hz { font-weight: 600; }
+.section-title { margin: .25rem 0 .5rem 0; font-weight: 700; }
+small.muted { color:#7a869a; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -193,13 +196,14 @@ def webaudio_player_html(plano: pd.DataFrame) -> str:
     playlist_json = json.dumps(items)
     html = f"""
 <div class="modern-card">
-  <div><strong>Player (WebAudio):</strong> toca no navegador, sem baixar arquivos.</div>
+  <div class="section-title">Player (WebAudio)</div>
+  <div class="help">Toca a sequência do protocolo diretamente no navegador (sem baixar arquivos).</div>
   <div class="controls" style="margin-top:.5rem;">
     <button id="btnPlay">▶️ Play</button>
     <button id="btnPause">⏸️ Pause</button>
     <button id="btnStop">⏹️ Stop</button>
   </div>
-  <div id="status" style="margin-top:.5rem; font-size:.9rem;"></div>
+  <div id="status" style="margin-top:.5rem; font-size:.95rem;"></div>
   <div id="now" style="margin-top:.25rem;"></div>
 </div>
 <script>
@@ -289,12 +293,14 @@ def webaudio_single_html(freq_hz: float, seconds: int = 20) -> str:
     """Player WebAudio para tocar UMA frequência (mono) por X segundos."""
     return f"""
 <div class="modern-card">
-  <div><strong>{int(freq_hz)} Hz</strong> — tocar no navegador (WebAudio)</div>
+  <div class="section-title">Frequência única</div>
+  <div class="help">Toca apenas esta frequência por {int(seconds)}s.</div>
+  <div><span class="badge">Frequência <span class="hz">{int(freq_hz)} Hz</span></span></div>
   <div class="controls" style="margin-top:.5rem;">
     <button id="s_play">▶️ Play</button>
     <button id="s_stop">⏹️ Stop</button>
   </div>
-  <div id="s_status" style="margin-top:.5rem; font-size:.9rem;"></div>
+  <div id="s_status" style="margin-top:.5rem; font-size:.95rem;"></div>
 </div>
 <script>
 let ctx = null, osc = null, gain = null, timer = null;
@@ -326,8 +332,8 @@ document.getElementById("s_stop").onclick = () => stopAll();
 
 def webaudio_binaural_html(carrier_hz: float, beat_hz: float, seconds: int = 20) -> str:
     """
-    Player WebAudio estéreo: junta dois osciladores em canais L/R com ChannelMergerNode.
-    L = carrier - beat/2 | R = carrier + beat/2
+    Player WebAudio estéreo: L = carrier - beat/2 | R = carrier + beat/2
+    Com exibição clara de L/R.
     """
     fc = float(carrier_hz)
     bt = abs(float(beat_hz))
@@ -335,7 +341,13 @@ def webaudio_binaural_html(carrier_hz: float, beat_hz: float, seconds: int = 20)
     fr = fc + bt/2.0
     return f"""
 <div class="modern-card">
-  <div><strong>Binaural:</strong> {int(fc)} Hz ± {bt/2:.2f} → batida {bt:.2f} Hz</div>
+  <div class="section-title">Binaural (L/R)</div>
+  <div class="help">Use <b>fones</b>. O efeito surge da diferença entre os ouvidos. Batida = {bt:.2f} Hz.</div>
+  <div style="margin:.25rem 0;">
+    <span class="badge">Left <span class="hz">{fl:.2f} Hz</span></span>
+    <span class="badge">Right <span class="hz">{fr:.2f} Hz</span></span>
+    <span class="badge">Carrier <span class="hz">{int(fc)} Hz</span></span>
+  </div>
   <div class="controls" style="margin-top:.5rem;">
     <button id="b_play">▶️ Play</button>
     <button id="b_stop">⏹️ Stop</button>
@@ -369,15 +381,88 @@ document.getElementById("b_play").onclick = () => {{
   gainR.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
 
   merger = ctx.createChannelMerger(2);
-  oscL.connect(gainL).connect(merger, 0, 0); // L no canal 0
-  oscR.connect(gainR).connect(merger, 0, 1); // R no canal 1
+  oscL.connect(gainL).connect(merger, 0, 0); // L
+  oscR.connect(gainR).connect(merger, 0, 1); // R
   merger.connect(ctx.destination);
 
   oscL.start(); oscR.start();
-  document.getElementById("b_status").textContent = "Tocando (L="+fL.toFixed(2)+" Hz | R="+fR.toFixed(2)+" Hz)";
+  document.getElementById("b_status").textContent = "Tocando…";
   timer = setTimeout(() => stopAll(), sec*1000);
 }};
 document.getElementById("b_stop").onclick = () => stopAll();
+</script>
+"""
+
+def webaudio_playlist_binaural_html(fases: list) -> str:
+    """
+    Toca o ROTEIRO inteiro, fase-a-fase (binaural).
+    'fases' é uma lista de {label, left_hz, right_hz, dur}.
+    """
+    data = json.dumps(fases)
+    return f"""
+<div class="modern-card">
+  <div class="section-title">Roteiro binaural — Execução automática</div>
+  <div class="help">Toca cada fase na ordem. Use <b>fones</b>. Volte e edite a tabela acima para ajustar.</div>
+  <div class="controls" style="margin-top:.5rem;">
+    <button id="rb_play">▶️ Play Roteiro</button>
+    <button id="rb_stop">⏹️ Stop</button>
+  </div>
+  <div id="rb_status" style="margin-top:.35rem; font-size:.95rem;"></div>
+  <div id="rb_now" class="help"></div>
+</div>
+<script>
+const roteiro = {data};
+let ctx=null, oscL=null, oscR=null, gainL=null, gainR=null, merger=null, timer=null;
+let i=0, playing=false;
+
+function stopAll(){{
+  playing=false;
+  if (timer) {{ clearTimeout(timer); timer=null; }}
+  [oscL, oscR].forEach(o => {{ if (o) try{{o.stop();}}catch(e){{}} }});
+  [oscL, oscR, gainL, gainR].forEach(n => {{ if(n) n.disconnect(); }});
+  oscL=oscR=gainL=gainR=merger=null;
+  document.getElementById("rb_status").textContent = "Parado.";
+  document.getElementById("rb_now").textContent = "";
+}}
+
+function playStep(){{
+  if (!playing) return;
+  if (i >= roteiro.length) {{ stopAll(); return; }}
+  const f = roteiro[i];
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+  oscL = ctx.createOscillator(); oscL.type="sine"; oscL.frequency.value=f.left_hz;
+  oscR = ctx.createOscillator(); oscR.type="sine"; oscR.frequency.value=f.right_hz;
+  gainL = ctx.createGain(); gainR = ctx.createGain();
+  gainL.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gainR.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gainL.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
+  gainR.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.05);
+  merger = ctx.createChannelMerger(2);
+  oscL.connect(gainL).connect(merger, 0, 0);
+  oscR.connect(gainR).connect(merger, 0, 1);
+  merger.connect(ctx.destination);
+
+  oscL.start(); oscR.start();
+  document.getElementById("rb_status").textContent = `Fase ${{i+1}}/${{roteiro.length}}`;
+  document.getElementById("rb_now").innerHTML = `<span class="badge">L ${'{'}f.left_hz.toFixed(2){'}'} Hz</span>
+    <span class="badge">R ${'{'}f.right_hz.toFixed(2){'}'} Hz</span> — ${'{'}f.label{'}'}`;
+
+  timer = setTimeout(() => {{
+    try {{ oscL.stop(); oscR.stop(); }} catch(e) {{}}
+    [oscL, oscR, gainL, gainR].forEach(n => {{ if(n) n.disconnect(); }});
+    oscL=oscR=gainL=gainR=merger=null;
+    i += 1;
+    setTimeout(playStep, 120);
+  }}, Math.max(1, f.dur) * 1000);
+}}
+
+document.getElementById("rb_play").onclick = () => {{
+  if (!roteiro.length) return;
+  stopAll();
+  i=0; playing=true; playStep();
+}};
+document.getElementById("rb_stop").onclick = () => stopAll();
 </script>
 """
 
@@ -385,22 +470,26 @@ document.getElementById("b_stop").onclick = () => stopAll();
 # UI
 # =========================================================
 st.title("💫 Frequências — Cama de Cristal")
+st.caption("Interface guiada — cada seção explica o que faz. Dica: passe o mouse sobre os rótulos para ler as dicas.")
 
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
     ["Gerador", "Pacientes", "Sessões", "Catálogo", "Admin", "Binaurais", "Plano Terapêutico"]
 )
 
-# ---------------- Gerador ----------------
+# ---------------- Gerador (frequências puras) ----------------
 with tab1:
-    st.subheader("Gerar protocolo de frequências")
+    st.subheader("Passo 1 — Escolher intenção e parâmetros")
+    st.markdown('<div class="help">Gera uma sequência de <b>frequências puras (seno)</b> baseada na intenção e chakra.</div>', unsafe_allow_html=True)
     catalogo = carregar_catalogo_freq()
 
     col1, col2, col3 = st.columns(3)
-    intencao = col1.selectbox("Intenção", list(INTENCOES.keys()), key="ger_intencao")
+    intencao = col1.selectbox("Intenção", list(INTENCOES.keys()), key="ger_intencao", help="Escolha o objetivo da sessão.")
     chakra_label = col2.selectbox("Chakra alvo", list(CHAKRA_MAP.keys()),
-                                  index=list(CHAKRA_MAP.keys()).index("Nenhum"), key="ger_chakra")
+                                  index=list(CHAKRA_MAP.keys()).index("Nenhum"), key="ger_chakra",
+                                  help="Opcional — reforça uma frequência de chakra.")
     chakra_alvo = CHAKRA_MAP[chakra_label]
-    duracao = int(col3.number_input("Duração (min)", 10, 120, 30, step=5, key="ger_dur"))
+    duracao = int(col3.number_input("Duração total (min)", 10, 120, 30, step=5, key="ger_dur",
+                                    help="Tempo total do protocolo"))
 
     if st.button("Gerar protocolo", type="primary", key="btn_gerar_protocolo"):
         if catalogo.empty or "code" not in catalogo.columns:
@@ -410,16 +499,14 @@ with tab1:
             if plano.empty:
                 st.warning("Não foi possível montar a playlist com as frequências atuais do catálogo.")
             else:
-                st.subheader("Protocolo sugerido")
+                st.subheader("Passo 2 — Conferir/Salvar/Executar")
                 st.dataframe(plano, use_container_width=True, hide_index=True)
 
-                # Player do protocolo inteiro
                 from streamlit.components.v1 import html as st_html
-                st.markdown("#### ▶️ Tocar protocolo no navegador (WebAudio)")
+                st.markdown("**Tocar protocolo completo (WebAudio, no navegador)**")
                 st_html(webaudio_player_html(plano), height=260)
 
-                # Selecionar e tocar UMA frequência (label -> hz)
-                st.markdown("#### 🔎 Tocar frequência específica do protocolo")
+                st.markdown("**Tocar uma frequência específica do protocolo**")
                 opcoes_labels, label_to_hz = [], {}
                 for i, r in enumerate(plano.itertuples(index=False), start=1):
                     hz = float(getattr(r, "hz"))
@@ -429,7 +516,8 @@ with tab1:
                         label = f"{label} (#{i})"
                     opcoes_labels.append(label); label_to_hz[label] = hz
 
-                sel_label = st.selectbox("Escolha a etapa (uma frequência)", opcoes_labels, key="play_sel_protocolo")
+                sel_label = st.selectbox("Escolha uma etapa", opcoes_labels, key="play_sel_protocolo",
+                                         help="Seleciona e toca só essa frequência por 20s.")
                 hz_escolhido = label_to_hz[sel_label]
 
                 colA, colB = st.columns([0.6, 0.4])
@@ -445,8 +533,7 @@ with tab1:
                         key="dl_wav_freq_unica"
                     )
 
-                # Prévias WAV por etapa
-                st.markdown("#### 🎧 Prévias em WAV (20s por etapa)")
+                st.markdown("**Prévias (WAV 20s) de todas as etapas**")
                 for _, r in plano.iterrows():
                     hz = float(r["hz"])
                     wav_bytes = synth_tone_wav(hz, seconds=20.0, sr=22050, amp=0.2)
@@ -465,7 +552,8 @@ with tab1:
 
 # ---------------- Pacientes ----------------
 with tab2:
-    st.subheader("Pacientes")
+    st.subheader("Cadastro de Pacientes")
+    st.markdown('<div class="help">Guarde nome, nascimento e notas do paciente. Requer Supabase conectado.</div>', unsafe_allow_html=True)
     if not sb:
         st.info("Conecte seu Supabase (defina SUPABASE_URL e SUPABASE_KEY) para ativar cadastros.")
     else:
@@ -499,7 +587,8 @@ with tab2:
 
 # ---------------- Sessões ----------------
 with tab3:
-    st.subheader("Sessões")
+    st.subheader("Sessões (registro)")
+    st.markdown('<div class="help">Gere e salve uma sessão pronta (com protocolo de frequências puras) para um paciente.</div>', unsafe_allow_html=True)
     if not sb:
         st.info("Conecte o Supabase para salvar sessões.")
     else:
@@ -555,37 +644,36 @@ with tab3:
 
 # ---------------- Catálogo ----------------
 with tab4:
-    st.subheader("Catálogo")
+    st.subheader("Catálogo (frequências disponíveis)")
     df = carregar_catalogo_freq()
     expected = ["code","nome","hz","tipo","chakra","cor"]
     has_cols = set(expected).issubset(df.columns)
 
     if df.empty or not has_cols:
-        st.info(
-            "Catálogo ainda não está carregado ou está sem colunas esperadas. "
-            "Vá até a aba **Admin** e importe o arquivo `seed_frequencies.csv`."
-        )
+        st.info("Catálogo ainda não está carregado ou está sem colunas esperadas. Vá até a aba **Admin** e importe o arquivo `seed_frequencies.csv`.")
         if not df.empty:
             st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.dataframe(df[expected], use_container_width=True, hide_index=True)
 
         # Audição rápida do catálogo (label -> hz)
-        st.markdown("#### 🎛️ Audição rápida (Catálogo)")
+        st.markdown("**Audição rápida do catálogo**")
         df_ok = df.dropna(subset=["hz"])
         if not df_ok.empty:
             labels = []
             label_to_hz = {}
             for i, row in enumerate(df_ok.itertuples(index=False), start=1):
                 hz = float(getattr(row, "hz"))
-                nome = getattr(row, "nome", None) or getattr(row, "code", "")
+                try:
+                    nome = getattr(row, "nome")
+                except Exception:
+                    nome = getattr(row, "code", "")
                 label = f"{int(hz)} Hz — {nome}"
                 if label in label_to_hz:
                     label = f"{label} (#{i})"
-                labels.append(label)
-                label_to_hz[label] = hz
+                labels.append(label); label_to_hz[label] = hz
 
-            sel_cat = st.selectbox("Escolha uma frequência do catálogo", labels, key="play_sel_catalogo")
+            sel_cat = st.selectbox("Escolha uma frequência para ouvir 20s", labels, key="play_sel_catalogo")
             hz_cat = label_to_hz[sel_cat]
 
             from streamlit.components.v1 import html as st_html
@@ -604,8 +692,8 @@ with tab4:
 
 # ---------------- Admin ----------------
 with tab5:
-    st.subheader("Admin")
-    st.caption("Importe `seed_frequencies.csv` para a tabela `frequencies`.")
+    st.subheader("Admin — Importar catálogo")
+    st.markdown('<div class="help">Carregue o arquivo <span class="kbd">seed_frequencies.csv</span> para preencher a tabela <span class="kbd">frequencies</span>.</div>', unsafe_allow_html=True)
     st.code(f"URL set? {bool(SUPABASE_URL)} | KEY set? {bool(SUPABASE_KEY)} | Client? {bool(sb)}")
 
     up = st.file_uploader("seed_frequencies.csv", type=["csv"], key="admin_seed_upload")
@@ -624,9 +712,7 @@ with tab5:
 
             # Normaliza 'tipo' para ENUM válido
             if "tipo" in df.columns and df["tipo"].dtype == object:
-                df["tipo"] = (
-                    df["tipo"].str.strip().str.lower().replace({"color": "cor"})
-                )
+                df["tipo"] = df["tipo"].str.strip().str.lower().replace({"color": "cor"})
 
             rows = df.to_dict(orient="records")
             ok, fail = 0, 0
@@ -651,30 +737,44 @@ with tab5:
 
 # ---------------- Binaurais ----------------
 with tab6:
-    st.subheader("Batidas Binaurais — criação rápida")
+    st.subheader("Binaurais — tela guiada")
+    st.markdown('<div class="help">Crie batidas binaurais (diferentes em cada ouvido). Use <b>fones</b>.</div>', unsafe_allow_html=True)
 
+    # Passo A — Definir uma batida
+    st.markdown("**Passo A — Definir uma batida**")
     c1, c2, c3 = st.columns(3)
-    carrier = float(c1.number_input("Carrier (Hz)", min_value=50.0, max_value=1000.0, value=220.0, step=1.0, key="bin_carrier"))
-    banda = c2.selectbox("Faixa de batida", list(BANDS.keys()) + ["Personalizada"], key="bin_banda")
+    carrier = float(c1.number_input("Carrier (Hz)", min_value=50.0, max_value=1000.0, value=220.0, step=1.0, key="bin_carrier",
+                                    help="Frequência base sobre a qual a batida acontece. 180–300 Hz costuma ser confortável."))
+    banda = c2.selectbox("Faixa de batida", list(BANDS.keys()) + ["Personalizada"], key="bin_banda",
+                         help="Escolha a faixa de intenção (alpha para relaxar, theta para aprofundar, etc.).")
     if banda == "Personalizada":
-        beat = float(c3.number_input("Batida (Hz)", min_value=0.5, max_value=40.0, value=7.0, step=0.5, key="bin_beat_custom"))
+        beat = float(c3.number_input("Batida (Hz)", min_value=0.5, max_value=40.0, value=7.0, step=0.5, key="bin_beat_custom",
+                                     help="Diferença L/R em Hz (a batida percebida)."))
     else:
         lo, hi = BANDS[banda]
-        beat = float(c3.slider("Batida dentro da faixa", min_value=float(lo), max_value=float(hi), value=float((lo+hi)/2), step=0.5, key="bin_beat_range"))
+        beat = float(c3.slider("Batida dentro da faixa", min_value=float(lo), max_value=float(hi), value=float((lo+hi)/2), step=0.5, key="bin_beat_range",
+                               help="Ajuste a batida dentro da faixa selecionada."))
 
     d1, d2 = st.columns([0.5, 0.5])
-    dur_binaural = int(d1.number_input("Duração (segundos)", min_value=10, max_value=600, value=30, step=5, key="bin_dur"))
-    amp = float(d2.slider("Volume relativo", min_value=0.05, max_value=0.6, value=0.2, step=0.05, key="bin_amp"))
+    dur_binaural = int(d1.number_input("Duração (segundos)", min_value=10, max_value=600, value=30, step=5, key="bin_dur",
+                                       help="Por quanto tempo tocar essa batida."))
+    amp = float(d2.slider("Volume relativo", min_value=0.05, max_value=0.6, value=0.2, step=0.05, key="bin_amp",
+                          help="Volume do tom. Ajuste baixo e suba aos poucos."))
 
-    st.caption(f"L/R = {carrier - beat/2:.2f} Hz / {carrier + beat/2:.2f} Hz  •  Batida = {beat:.2f} Hz")
+    left_hz = max(1.0, carrier - beat/2)
+    right_hz = carrier + beat/2
+    st.markdown(f'<div class="modern-card"><span class="badge">Left <span class="hz">{left_hz:.2f} Hz</span></span>'
+                f'<span class="badge">Right <span class="hz">{right_hz:.2f} Hz</span></span>'
+                f'<span class="badge">Carrier <span class="hz">{int(carrier)} Hz</span></span>'
+                f'<span class="badge">Batida <span class="hz">{beat:.2f} Hz</span></span></div>', unsafe_allow_html=True)
 
     # Player binaural (WebAudio)
     from streamlit.components.v1 import html as st_html
-    st.markdown("#### ▶️ Tocar binaural (WebAudio, estéreo)")
-    st_html(webaudio_binaural_html(carrier, beat, seconds=dur_binaural), height=220)
+    st.markdown("**Tocar esta batida (WebAudio, estéreo)**")
+    st_html(webaudio_binaural_html(carrier, beat, seconds=dur_binaural), height=230)
 
     # WAV estéreo (20s) para download/preview
-    st.markdown("#### 🎧 Prévia WAV estéreo (20s)")
+    st.markdown("**Prévia WAV estéreo (20s)**")
     wav_bin = synth_binaural_wav(carrier, beat, seconds=20.0, sr=44100, amp=amp)
     colL, colR = st.columns([0.7, 0.3])
     with colL:
@@ -690,8 +790,9 @@ with tab6:
         )
 
     st.divider()
-    st.markdown("### 🧭 Roteiro binaural (várias fases)")
-    st.caption("Monte uma sequência de fases (batida/duração). Ex.: Relaxar (alpha) → Aprofundar (theta) → Integrar (alpha).")
+    # Passo B — Roteiro
+    st.markdown("**Passo B — Montar roteiro (várias fases)**")
+    st.markdown('<div class="help">Crie uma sequência de fases (batidas e durações). Ex.: relaxar (alpha) → aprofundar (theta) → integrar (alpha).</div>', unsafe_allow_html=True)
 
     default_rows = pd.DataFrame([
         {"fase":"Chegada/Relaxamento", "carrier_hz":carrier, "beat_hz":10.0, "duracao_min":5},
@@ -708,27 +809,62 @@ with tab6:
             "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", min_value=50.0, max_value=1000.0, step=1.0),
             "beat_hz": st.column_config.NumberColumn("Batida (Hz)", min_value=0.5, max_value=40.0, step=0.5),
             "duracao_min": st.column_config.NumberColumn("Duração (min)", min_value=1, max_value=120, step=1),
-        }
+        },
+        help="Edite diretamente as células. Use o botão + para adicionar linhas."
     )
     if not roteiro.empty:
         roteiro = roteiro.copy()
         roteiro["left_hz"] = (roteiro["carrier_hz"] - roteiro["beat_hz"]/2).clip(lower=1.0)
         roteiro["right_hz"] = roteiro["carrier_hz"] + roteiro["beat_hz"]/2
-        st.dataframe(roteiro, use_container_width=True, hide_index=True)
+        roteiro["duracao_seg"] = (roteiro["duracao_min"]*60).astype(int)
+        st.markdown("**Roteiro calculado (L/R e duração em segundos)**")
+        st.dataframe(roteiro[["fase","carrier_hz","beat_hz","left_hz","right_hz","duracao_min","duracao_seg"]],
+                     use_container_width=True, hide_index=True)
 
-        # Exportações
+        # Execução automática do roteiro
+        fases = [
+            {
+                "label": f'{row["fase"]} — {row["beat_hz"]:.2f} Hz',
+                "left_hz": float(row["left_hz"]),
+                "right_hz": float(row["right_hz"]),
+                "dur": int(row["duracao_seg"])
+            }
+            for _, row in roteiro.iterrows()
+        ]
+        st.markdown("**▶️ Tocar roteiro inteiro (WebAudio, estéreo)**")
+        st_html(webaudio_playlist_binaural_html(fases), height=260)
+
+        # Exportar e salvar (opcional)
         colx, coly, colz = st.columns(3)
         colx.download_button("Baixar CSV do roteiro", roteiro.to_csv(index=False).encode("utf-8"),
                              file_name="roteiro_binaural.csv", mime="text/csv", key="dl_rot_csv")
-        coly.download_button("Baixar JSON do roteiro", roteiro.to_json(orient="records").encode("utf-8"),
+        coly.download_button("Baixar JSON do roteiro", pd.DataFrame(fases).to_json(orient="records").encode("utf-8"),
                              file_name="roteiro_binaural.json", mime="application/json", key="dl_rot_json")
+
+        if sb:
+            if st.button("Salvar roteiro como sessão (status=binaural)", type="primary", key="btn_save_rot"):
+                payload = {
+                    "patient_id": None,
+                    "data": datetime.utcnow().isoformat(),
+                    "duracao_min": int(roteiro["duracao_min"].sum()),
+                    "intencao": "Roteiro Binaural",
+                    "chakra_alvo": None,
+                    "status": "binaural",
+                    "protocolo": {"fases": fases}
+                }
+                try:
+                    sb.table("sessions").insert([payload]).execute()
+                    st.success("Roteiro salvo como sessão (status=binaural)!")
+                except Exception as e:
+                    st.error(f"Erro ao salvar roteiro: {e}")
 
 # ---------------- Plano Terapêutico ----------------
 with tab7:
     st.subheader("Plano Terapêutico")
+    st.markdown('<div class="help">Descreva o objetivo, faixas recomendadas e cadência. Você pode salvar como sessão ou exportar.</div>', unsafe_allow_html=True)
     if not sb:
         st.info("Conecte o Supabase para salvar planos (ou exporte em CSV/JSON).")
-    # Seleção paciente (se houver)
+
     patients_map = {}
     if sb:
         try:
@@ -748,7 +884,7 @@ with tab7:
 
     notas = st.text_area("Observações", placeholder="Ex.: combinar com respiração; evitar café; hidratar-se…", key="plan_notas")
 
-    st.markdown("#### Estrutura sugerida de cada sessão")
+    st.markdown("**Estrutura sugerida de cada sessão**")
     bloco = pd.DataFrame([
         {"fase":"Aterramento", "tipo":"frequência", "valor":"396 Hz", "dur_min":5},
         {"fase":"Trabalho principal", "tipo":"binaural", "valor":"Alpha 10 Hz", "dur_min":20},
