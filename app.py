@@ -102,7 +102,21 @@ with tab1:
 
 with tab4:
     st.subheader("Catálogo")
-    st.dataframe(carregar_catalogo_freq()[["code","nome","hz","tipo","chakra","cor"]], use_container_width=True, hide_index=True)
+    df = carregar_catalogo_freq()
+
+    expected = ["code","nome","hz","tipo","chakra","cor"]
+    has_cols = set(expected).issubset(df.columns)
+
+    if df.empty or not has_cols:
+        st.info(
+            "Catálogo ainda não está carregado ou está sem colunas esperadas. "
+            "Vá até a aba **Admin** e importe o arquivo `seed_frequencies.csv`."
+        )
+        # Mostra o que tiver (útil para depurar)
+        if not df.empty:
+            st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.dataframe(df[expected], use_container_width=True, hide_index=True)
 
 with tab2:
     st.subheader("Pacientes")
@@ -157,6 +171,26 @@ with tab5:
     up = st.file_uploader("seed_frequencies.csv", type=["csv"])
     if up and sb and st.button("Importar agora"):
         df = pd.read_csv(up)
-        for row in df.to_dict(orient="records"):
-            sb.table("frequencies").upsert(row).execute()
-        st.success(f"Importadas {len(df)} frequências.")
+
+        # Converte strings vazias para None (NULL no Postgres)
+        for col in ["chakra", "cor", "descricao", "code", "nome"]:
+            if col in df.columns:
+                df[col] = df[col].replace({"": None})
+
+        # Converte hz para número
+        if "hz" in df.columns:
+            df["hz"] = pd.to_numeric(df["hz"], errors="coerce")
+
+        # Converte tipo para um dos enums válidos
+        if "tipo" in df.columns:
+            df["tipo"] = df["tipo"].str.lower().replace({"color":"cor"})
+
+        rows = df.to_dict(orient="records")
+        ok, fail = 0, 0
+        for r in rows:
+            try:
+                sb.table("frequencies").upsert(r).execute()
+                ok += 1
+            except Exception as e:
+                fail += 1
+        st.success(f"Importadas/atualizadas: {ok}. Falhas: {fail}.")
