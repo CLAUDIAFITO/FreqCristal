@@ -91,7 +91,7 @@ def gerar_protocolo(intencao: str, chakra_alvo: str|None, duracao_min: int, cata
     base = INTENCOES.get(intencao, {"base": []})
     sel = list(dict.fromkeys(base["base"]))  # sem repetição mantendo ordem
     if chakra_alvo:
-        ccode = f"CHAKRA_{chara_alvo_upper(chakra_alvo)}"
+        ccode = f"CHAKRA_{chakra_alvo.upper()}"
         if (catalogo["code"] == ccode).any() and ccode not in sel:
             sel.append(ccode)
     if not sel:
@@ -119,10 +119,6 @@ def gerar_protocolo(intencao: str, chakra_alvo: str|None, duracao_min: int, cata
     if linhas and usado < total:
         linhas[-1]["duracao_seg"] += total - usado
     return pd.DataFrame(linhas)
-
-def chara_alvo_upper(chakra_alvo: str) -> str:
-    # helper para manter compatibilidade e evitar typos
-    return chakra_alvo.upper()
 
 # =========================================================
 # Áudio — síntese WAV e players WebAudio
@@ -320,18 +316,25 @@ with tab1:
                 st.markdown("#### ▶️ Tocar protocolo no navegador (WebAudio)")
                 st_html(webaudio_player_html(plano), height=260)
 
-                # Selecionar e tocar UMA frequência do protocolo
+                # Selecionar e tocar UMA frequência do protocolo (label -> hz)
                 st.markdown("#### 🔎 Tocar frequência específica do protocolo")
-                opcoes = [
-                    (float(r["hz"]), f'{int(r["hz"])} Hz — {r["nome"] or r["code"]}')
-                    for _, r in plano.iterrows()
-                ]
+                opcoes_labels = []
+                label_to_hz = {}
+                for i, r in enumerate(plano.itertuples(index=False), start=1):
+                    hz = float(getattr(r, "hz"))
+                    nome = getattr(r, "nome") or getattr(r, "code")
+                    label = f"{int(hz)} Hz — {nome}"
+                    if label in label_to_hz:
+                        label = f"{label} (#{i})"  # garante unicidade
+                    opcoes_labels.append(label)
+                    label_to_hz[label] = hz
+
                 sel_label = st.selectbox(
                     "Escolha a etapa (uma frequência)",
-                    [lbl for _, lbl in opcoes],
+                    opcoes_labels,
                     key="play_sel_protocolo"
                 )
-                hz_escolhido = dict(opcoes)[sel_label]
+                hz_escolhido = label_to_hz[sel_label]
 
                 colA, colB = st.columns([0.6, 0.4])
                 with colA:
@@ -471,34 +474,52 @@ with tab4:
     else:
         st.dataframe(df[expected], use_container_width=True, hide_index=True)
 
-        # Audição rápida do catálogo (tocar qualquer frequência)
+        # Audição rápida do catálogo (label -> hz)
         st.markdown("#### 🎛️ Audição rápida (Catálogo)")
         df_ok = df.dropna(subset=["hz"])
         if not df_ok.empty:
-            lista = [
-                (float(row["hz"]), f'{int(row["hz"])} Hz — {row.get("nome") or row.get("code")}')
-                for _, row in df_ok.iterrows()
-            ]
-            if lista:
-                sel_cat = st.selectbox(
-                    "Escolha uma frequência do catálogo",
-                    [lbl for _, lbl in lista],
-                    key="play_sel_catalogo"
+            labels = []
+            label_to_hz = {}
+            for i, row in enumerate(df_ok.itertuples(index=False), start=1):
+                hz = float(getattr(row, "hz"))
+                # getattr(row, "nome", None) não funciona em namedtuple: usamos lógica abaixo
+                try:
+                    nome = getattr(row, "nome")
+                except Exception:
+                    # fallback usando índice de colunas
+                    nome = df_ok.columns[df_ok.columns.get_loc("nome")] if "nome" in df_ok.columns else None
+                if not nome:
+                    try:
+                        code_val = getattr(row, "code")
+                    except Exception:
+                        code_val = ""
+                    nome = code_val
+                label = f"{int(hz)} Hz — {nome}"
+                if label in label_to_hz:
+                    label = f"{label} (#{i})"
+                labels.append(label)
+                label_to_hz[label] = hz
+
+            sel_cat = st.selectbox(
+                "Escolha uma frequência do catálogo",
+                labels,
+                key="play_sel_catalogo"
+            )
+            hz_cat = label_to_hz[sel_cat]
+
+            from streamlit.components.v1 import html as st_html
+            col1, col2 = st.columns([0.6, 0.4])
+            with col1:
+                st_html(webaudio_single_html(hz_cat, seconds=20), height=180)
+            with col2:
+                wav_bytes = synth_tone_wav(hz_cat, seconds=20.0, sr=22050, amp=0.2)
+                st.download_button(
+                    "Baixar WAV (20s)",
+                    data=wav_bytes,
+                    file_name=f"{int(hz_cat)}Hz_preview.wav",
+                    mime="audio/wav",
+                    key="dl_wav_cat"
                 )
-                hz_cat = dict(lista)[sel_cat]
-                from streamlit.components.v1 import html as st_html
-                col1, col2 = st.columns([0.6, 0.4])
-                with col1:
-                    st_html(webaudio_single_html(hz_cat, seconds=20), height=180)
-                with col2:
-                    wav_bytes = synth_tone_wav(hz_cat, seconds=20.0, sr=22050, amp=0.2)
-                    st.download_button(
-                        "Baixar WAV (20s)",
-                        data=wav_bytes,
-                        file_name=f"{int(hz_cat)}Hz_preview.wav",
-                        mime="audio/wav",
-                        key="dl_wav_cat"
-                    )
 
 # ---------------- Admin ----------------
 with tab5:
