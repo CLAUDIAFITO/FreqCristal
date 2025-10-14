@@ -790,7 +790,7 @@ with tab6:
         )
 
     st.divider()
-    # Passo B — Roteiro
+    # Passo B — Roteiro (robusto à versão do Streamlit)
     st.markdown("**Passo B — Montar roteiro (várias fases)**")
     st.markdown('<div class="help">Crie uma sequência de fases (batidas e durações). Ex.: relaxar (alpha) → aprofundar (theta) → integrar (alpha).</div>', unsafe_allow_html=True)
 
@@ -799,27 +799,51 @@ with tab6:
         {"fase":"Aprofundamento", "carrier_hz":carrier, "beat_hz":6.0, "duracao_min":15},
         {"fase":"Integração", "carrier_hz":carrier, "beat_hz":10.0, "duracao_min":10},
     ])
-    roteiro = st.data_editor(
-        default_rows,
-        key="roteiro_binaural",
-        use_container_width=True,
-        num_rows="dynamic",
-        column_config={
-            "fase": st.column_config.TextColumn("Fase"),
-            "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", min_value=50.0, max_value=1000.0, step=1.0),
-            "beat_hz": st.column_config.NumberColumn("Batida (Hz)", min_value=0.5, max_value=40.0, step=0.5),
-            "duracao_min": st.column_config.NumberColumn("Duração (min)", min_value=1, max_value=120, step=1),
-        },
-        help="Edite diretamente as células. Use o botão + para adicionar linhas."
-    )
+
+    # === Data editor robusto a versões do Streamlit ===
+    try:
+        colcfg = None
+        if hasattr(st, "column_config"):
+            colcfg = {
+                "fase": st.column_config.TextColumn("Fase"),
+                "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", min_value=50.0, max_value=1000.0, step=1.0),
+                "beat_hz": st.column_config.NumberColumn("Batida (Hz)", min_value=0.5, max_value=40.0, step=0.5),
+                "duracao_min": st.column_config.NumberColumn("Duração (min)", min_value=1, max_value=120, step=1),
+            }
+        roteiro = st.data_editor(
+            default_rows,
+            key="roteiro_binaural",
+            use_container_width=True,
+            num_rows="dynamic",           # algumas versões aceitam string
+            column_config=colcfg,         # pode ser None
+        )
+    except TypeError:
+        # fallback sem column_config/num_rows
+        roteiro = st.data_editor(
+            default_rows,
+            key="roteiro_binaural",
+            use_container_width=True,
+        )
+
+    # Coerção de tipos e cálculo (à prova de strings)
     if not roteiro.empty:
         roteiro = roteiro.copy()
+        for col in ["carrier_hz", "beat_hz", "duracao_min"]:
+            roteiro[col] = pd.to_numeric(roteiro[col], errors="coerce")
+
+        roteiro["carrier_hz"] = roteiro["carrier_hz"].fillna(carrier)
+        roteiro["beat_hz"] = roteiro["beat_hz"].fillna(7.0)
+        roteiro["duracao_min"] = roteiro["duracao_min"].fillna(5).astype(int)
+
         roteiro["left_hz"] = (roteiro["carrier_hz"] - roteiro["beat_hz"]/2).clip(lower=1.0)
         roteiro["right_hz"] = roteiro["carrier_hz"] + roteiro["beat_hz"]/2
         roteiro["duracao_seg"] = (roteiro["duracao_min"]*60).astype(int)
+
         st.markdown("**Roteiro calculado (L/R e duração em segundos)**")
-        st.dataframe(roteiro[["fase","carrier_hz","beat_hz","left_hz","right_hz","duracao_min","duracao_seg"]],
-                     use_container_width=True, hide_index=True)
+        st.dataframe(
+            roteiro[["fase","carrier_hz","beat_hz","left_hz","right_hz","duracao_min","duracao_seg"]],
+            use_container_width=True, hide_index=True
+        )
 
         # Execução automática do roteiro
         fases = [
