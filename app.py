@@ -1,15 +1,16 @@
-# app.py — Frequências • Cama de Cristal (com Binaural completo + Fitoterapia + Prescrições)
+# app.py — Frequências • Cama de Cristal (Binaural completo + Fitoterapia + Prescrições + Cristais)
 # Requisitos locais: pip install streamlit pandas python-dotenv supabase==2.4.6 numpy
 # No deploy (Streamlit Cloud): defina SUPABASE_URL e SUPABASE_KEY (ANON) em Secrets/Vars.
 
-import os, io, json, wave
+import os, io, json, wave, re
 from datetime import datetime, date
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+from streamlit.components.v1 import html as stc_html
 
 # ------------------------ ENV / SUPABASE ------------------------
 load_dotenv()
@@ -112,8 +113,6 @@ def gerar_protocolo(intencao: str, chakra_alvo: Optional[str], duracao_min: int,
     if usado < total:
         linhas[-1]["duracao_seg"] += total - usado
     return pd.DataFrame(linhas)
-
-from streamlit.components.v1 import html as stc_html
 
 def st_html(html: str, height: int = 220):
     stc_html(html, height=height, scrolling=False)
@@ -236,9 +235,9 @@ document.getElementById("rb_stop").onclick=()=>stopAll();
 
 # ------------------------ TABS ------------------------
 tabs = st.tabs([
-    "Gerador","Binaural","Pacientes","Sessões","Catálogo","Templates","Fitoterapia","Prescrições","Admin"
+    "Gerador","Binaural","Pacientes","Sessões","Catálogo","Templates","Fitoterapia","Prescrições","Cristais","Admin"
 ])
-tab_ger, tab_bin, tab_pac, tab_ses, tab_cat, tab_tpl, tab_phyto, tab_presc, tab_admin = tabs
+tab_ger, tab_bin, tab_pac, tab_ses, tab_cat, tab_tpl, tab_phyto, tab_presc, tab_crys, tab_admin = tabs
 
 # ======================== ABA: GERADOR ========================
 with tab_ger:
@@ -455,11 +454,52 @@ with tab_ses:
                 st.error(f"Erro ao criar sessão: {e}")
 
         try:
-            sess = sb.table("sessions").select("id,data,intencao,duracao_min,status,created_at").order("created_at", desc=True).execute().data
+            sess = sb.table("sessions").select("id,data,intencao,duracao_min,status,created_at").order("created_at", desc=True).limit(20).execute().data
         except Exception:
             sess = []
         if sess:
             st.dataframe(pd.DataFrame(sess), use_container_width=True, hide_index=True)
+
+        # -------- Anexar cristais à sessão --------
+        st.markdown("#### Anexar cristais à sessão")
+        try:
+            crys = sb.table("crystals").select("id,name,chakra,keywords").order("name", desc=False).execute().data or []
+        except Exception:
+            crys = []
+        if crys:
+            nomes_crys = [c["name"] for c in crys]
+            mapa_crys = {c["name"]: c for c in crys}
+            sel_crys = st.multiselect("Cristais", nomes_crys, key="ses_pick_crys")
+            placement = st.text_input("Posicionamento sugerido", placeholder="ex.: sobre cardíaco / aos pés", key="ses_crys_place")
+            intent = st.text_input("Intenção", placeholder="ex.: harmonização / aterramento", key="ses_crys_intent")
+            notes = st.text_area("Notas", key="ses_crys_notes")
+
+            try:
+                sess_recent = sb.table("sessions").select("id,intencao,created_at").order("created_at", desc=True).limit(10).execute().data or []
+            except Exception:
+                sess_recent = []
+            if sess_recent:
+                opt = {f"{s['intencao']} — {s['created_at']}": s["id"] for s in sess_recent}
+                pick = st.selectbox("Sessão alvo", list(opt.keys()), key="ses_crys_target")
+                if st.button("Anexar cristais à sessão", type="primary", key="ses_crys_btn"):
+                    sid = opt[pick]
+                    ok, fail = 0, 0
+                    for n in sel_crys:
+                        try:
+                            cid = mapa_crys[n]["id"]
+                            sb.table("session_crystals").upsert({
+                                "session_id": sid,
+                                "crystal_id": cid,
+                                "placement": placement or None,
+                                "intent": intent or None,
+                                "notes": notes or None
+                            }).execute()
+                            ok += 1
+                        except Exception:
+                            fail += 1
+                    st.success(f"Vinculados: {ok} • Falhas: {fail}")
+            else:
+                st.info("Crie uma sessão primeiro para poder anexar cristais.")
 
 # ======================== ABA: CATÁLOGO ========================
 with tab_cat:
@@ -686,6 +726,68 @@ with tab_presc:
         else:
             st.info("Nenhuma prescrição encontrada para os filtros atuais.")
 
+# ======================== ABA: CRISTAIS ========================
+with tab_crys:
+    st.subheader("💎 Cristais")
+    if not sb:
+        st.info("Conecte o Supabase para ver o catálogo de cristais.")
+    else:
+        colf1, colf2, colf3 = st.columns([1,1,1])
+        q_text = colf1.text_input("Buscar por nome/alias/keyword", key="crys_q")
+        q_chak = colf2.selectbox("Chakra", ["(todos)","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"], key="crys_chak")
+        q_color = colf3.text_input("Cor (texto livre)", key="crys_color")
+
+        cols = "id,name,aliases,chakra,color,element,mohs,keywords,benefits,cautions,cleansing,pairing_freq,notes"
+        try:
+            items = sb.table("crystals").select(cols).order("name", desc=False).execute().data or []
+        except Exception as e:
+            items = []
+            st.error(f"Erro ao carregar cristais: {e}")
+
+        df = pd.DataFrame(items)
+        if not df.empty:
+            if q_text:
+                pat = re.compile(re.escape(q_text), re.I)
+                def _match_row(r):
+                    blob = " ".join([
+                        r.get("name",""),
+                        " ".join(r.get("aliases") or []),
+                        " ".join(r.get("keywords") or [])
+                    ])
+                    return bool(pat.search(blob))
+                df = df[df.apply(_match_row, axis=1)]
+            if q_chak != "(todos)":
+                df = df[df["chakra"].apply(lambda xs: q_chak in (xs or []))]
+            if q_color:
+                patc = re.compile(re.escape(q_color), re.I)
+                df = df[df["color"].apply(lambda xs: any(patc.search(x) for x in (xs or [])))]
+
+            st.dataframe(df[["name","chakra","color","keywords","mohs"]], use_container_width=True, hide_index=True)
+
+            st.markdown("### Detalhes")
+            sel = st.selectbox("Escolha um cristal", df["name"].tolist(), key="crys_sel")
+            row = df[df["name"]==sel].iloc[0]
+            col1, col2 = st.columns([1.2,1])
+            with col1:
+                st.markdown(f"**Chakras:** {', '.join(row['chakra'] or []) or '—'}")
+                st.markdown(f"**Cores:** {', '.join(row['color'] or []) or '—'}")
+                st.markdown(f"**Elementos:** {', '.join(row['element'] or []) or '—'}")
+                st.markdown(f"**Palavras-chave:** {', '.join(row['keywords'] or []) or '—'}")
+                st.markdown("**Benefícios energéticos:**")
+                try:
+                    bens = row["benefits"] or []
+                    st.write("\n".join([f"- {b}" for b in bens]))
+                except Exception:
+                    st.write(row["benefits"])
+                if row.get("notes"):
+                    st.caption(row["notes"])
+            with col2:
+                st.markdown("**Limpeza:** " + (", ".join(row["cleansing"] or []) or "—"))
+                st.markdown("**Cuidados:** " + (row.get("cautions") or "—"))
+                st.markdown("**Combinações de frequência:**")
+                pf = row.get("pairing_freq") or {}
+                st.json(pf, expanded=False)
+
 # ======================== ABA: ADMIN ========================
 with tab_admin:
     st.subheader("Admin")
@@ -729,7 +831,9 @@ with tab_admin:
         status_cols[1].metric("URL", SUPABASE_URL or "—")
         status_cols[2].metric("Auth (ANON)", "OK" if SUPABASE_KEY else "—")
 
-        st.caption("Se aparecer erro de RLS (row level security), crie políticas adequadas às tabelas (`patients`, `sessions`, `frequencies`, `therapy_templates`, `phytotherapy_plans`, `phytotherapy_prescriptions`).")
+        st.caption("Se aparecer erro de RLS (row level security), crie políticas adequadas às tabelas "
+                   "(`patients`, `sessions`, `frequencies`, `therapy_templates`, `phytotherapy_plans`, "
+                   "`phytotherapy_prescriptions`, `crystals`, `session_crystals`).")
 
 # ------------------------ FIM DO APP ------------------------
 st.markdown("<div class='small'>© Seu App de Frequências — uso educativo. Não substitui cuidado médico.</div>", unsafe_allow_html=True)
