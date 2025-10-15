@@ -194,24 +194,138 @@ with tabs[0]:
 
 # ========== Anamnese ==========
 with tabs[1]:
-    st.subheader("Anamnese")
+    st.subheader("Anamnese — Avançada")
+
+    # Paciente
     pts = sb_select("patients","id,nome",order="created_at",desc=True)
     mapa = {p["nome"]:p["id"] for p in pts}
-    psel = st.selectbox("Paciente", list(mapa.keys()) or ["—"], key=K("anamnese","paciente"))
+    psel = st.selectbox("Paciente", list(mapa.keys()) or ["—"], key=K("anv","paciente"))
 
-    col1,col2=st.columns(2)
-    q_sono = col1.slider("Qualidade do sono",0,10,6, key=K("anamnese","sono"))
-    q_estresse = col2.slider("Nível de estresse",0,10,5, key=K("anamnese","estresse"))
-    chks = st.multiselect("Queixas principais",
-                          ["Ansiedade","Insônia","Cansaço","Dores","Falta de foco"],
-                          key=K("anamnese","queixas"))
-    obs = st.text_area("Observações", key=K("anamnese","obs"))
-    if st.button("Salvar anamnese", key=K("anamnese","btn_salvar")) and sb:
-        sb.table("anamneses").insert({
-            "patient_id": mapa.get(psel),
-            "respostas":{"sono":q_sono,"estresse":q_estresse,"queixas":chks,"obs":obs}
-        }).execute()
-        st.success("Anamnese salva.")
+    # Carrega perguntas ativas do banco
+    qs = sb_select("anamnesis_questions","section,qkey,label,qtype,min_val,max_val,options,weight,required,ord,active",order="section")
+    if not qs:
+        st.warning("Nenhuma pergunta cadastrada. Execute o SQL de perguntas (anamnesis_questions).")
+    else:
+        # agrupar por seção
+        dfq = pd.DataFrame(qs)
+        dfq = dfq[dfq["active"].fillna(True)]
+        sections = list(dfq["section"].dropna().unique())
+
+        # formulário com tabs por seção
+        with st.form(K("anv","form")):
+            tabs_sec = st.tabs(sections)
+            respostas = {}
+            for idx, sec in enumerate(sections):
+                with tabs_sec[idx]:
+                    bloco = dfq[dfq["section"]==sec].sort_values(["ord","qkey"])
+                    for _, row in bloco.iterrows():
+                        qk = row["qkey"]; label = row["label"]; qt = row["qtype"]
+                        mn = row.get("min_val"); mx = row.get("max_val")
+                        opts = row.get("options") or []
+                        key = K("anv","q",sec,qk)
+
+                        if qt == "likert":
+                            val = st.slider(label, int(mn or 0), int(mx or 10), int((mn or 0 + (mx or 10))//2), key=key)
+                        elif qt == "bool":
+                            val = st.checkbox(label, key=key)
+                        elif qt == "multi":
+                            val = st.multiselect(label, opts, key=key)
+                        elif qt == "number":
+                            val = st.number_input(label, value=float(mn or 0), min_value=float(mn or 0), max_value=float(mx or 9999), step=1.0, key=key)
+                        else:
+                            val = st.text_area(label, key=key) if (mx or 0) > 200 else st.text_input(label, key=key)
+
+                        respostas[qk] = val
+
+            # cálculo de score (chakras + indicadores)
+            def score_from_answers(ans: dict) -> dict:
+                # inicia com 0
+                chakras = {k:0.0 for k in ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]}
+                flags = set()
+                # aplica pesos das perguntas
+                for _, row in dfq.iterrows():
+                    qk = row["qkey"]; w = row.get("weight") or {}
+                    if qk not in ans: continue
+                    val = ans[qk]
+                    # flags
+                    if isinstance(w, dict) and "flags" in w:
+                        if bool(val):
+                            for fl in (w["flags"] or []):
+                                flags.add(fl)
+                    # chakra weights
+                    if isinstance(w, dict) and "chakra" in w:
+                        for ch, wt in (w["chakra"] or {}).items():
+                            try:
+                                v = float(val) if isinstance(val,(int,float)) else (1.0 if val else 0.0)
+                            except Exception:
+                                v = 0.0
+                            chakras[ch] = chakras.get(ch,0.0) + (float(wt) * v)
+
+                # normalizações simples
+                # Equilíbrio autoavaliado (0–10) podemos reverter para “déficit” (10-v)
+                for ch_key, eq_key in [
+                    ("raiz","raiz_eq"),("sacral","sacral_eq"),("plexo","plexo_eq"),
+                    ("cardiaco","cardiaco_eq"),("laringeo","laringeo_eq"),
+                    ("terceiro_olho","terceiro_olho_eq"),("coronal","coronal_eq")
+                ]:
+                    if eq_key in respostas and isinstance(respostas[eq_key], (int,float)):
+                        chakras[ch_key] += max(0.0, 10.0 - float(respostas[eq_key]))
+
+                # índices diretos
+                idx = {
+                    "sono": float(respostas.get("sono_qualidade") or 0),
+                    "estresse": float(respostas.get("estresse_nivel") or 0),
+                    "ansiedade": float(respostas.get("ansiedade") or 0),
+                }
+                return {"chakras": chakras, "flags": sorted(list(flags)), "indices": idx}
+
+            score = score_from_answers(respostas)
+
+            # resumo e recomendações iniciais (sugestão)
+            st.markdown("### Resumo")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write("**Chakras (maior = mais atenção):**")
+                st.json(score["chakras"])
+            with c2:
+                st.write("**Flags:**", ", ".join(score["flags"]) if score["flags"] else "—")
+                st.write("**Índices:**", score["indices"])
+
+            recs = []
+            ch_order = sorted(score["chakras"].items(), key=lambda x: x[1], reverse=True)
+            if ch_order:
+                top_ch, _ = ch_order[0]
+                # mapeamento simples p/ frequências iniciais
+                mapa_freq = {
+                    "raiz":["SOL396","CHAKRA_RAIZ"],
+                    "sacral":["SOL417","CHAKRA_SACRAL"],
+                    "plexo":["SOL432","SOL417"],
+                    "cardiaco":["SOL528","SOL639","CHAKRA_CARDIACO"],
+                    "laringeo":["SOL741","CHAKRA_LARINGEO"],
+                    "terceiro_olho":["SOL852","CHAKRA_TERCEIRO_OLHO"],
+                    "coronal":["SOL963","CHAKRA_CORONAL"]
+                }
+                recs.append({"frequencias_sugeridas": mapa_freq.get(top_ch, ["SOL528"])})
+
+            # contraindicações que afetam binaural/herbais
+            if "epilepsia" in score["flags"]:
+                recs.append({"binaural": "evitar batidas altas (>10Hz); preferir sem binaural"})
+            if "gravidez" in score["flags"]:
+                recs.append({"fitoterapia": "evitar ervas com contraindicação na gestação; revisar plano"})
+            if "marcapasso" in score["flags"]:
+                recs.append({"eletromagnético": "evitar campos/ímanes; utilizar apenas luz/sons seguros"})
+
+            if recs:
+                st.markdown("### Recomendações iniciais (automáticas)")
+                st.json(recs)
+
+            # Salvar
+            if st.form_submit_button("Salvar anamnese", use_container_width=True):
+                payload = {"patient_id": mapa.get(psel),
+                           "respostas": respostas,
+                           "score": score}
+                sb.table("anamneses").insert(payload).execute()
+                st.success("Anamnese salva com sucesso.")
 
 # ========== Agenda ==========
 with tabs[2]:
