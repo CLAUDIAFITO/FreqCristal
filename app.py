@@ -70,9 +70,16 @@ def bytes_to_data_url(raw: bytes, filename: str|None) -> tuple[str, str]:
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}", mime
 
-def webaudio_binaural_html(fc: float, beat: float, seconds: int=60, bg_data_url: str|None=None, bg_gain: float=0.12):
-    bt = abs(float(beat)); fl = max(20.0, float(fc)-bt/2); fr = float(fc)+bt/2; sec = int(max(5,seconds))
-    bg = json.dumps(bg_data_url) if bg_data_url else "null"; g = float(bg_gain)
+def webaudio_binaural_html(fc: float, beat: float, seconds: int=60,
+                           bg_data_url: str|None=None, bg_gain: float=0.12):
+    """Player binaural + música de fundo estável usando HTMLAudioElement (menos bugs que decodeAudioData)."""
+    bt = abs(float(beat))
+    fl = max(20.0, float(fc) - bt/2)
+    fr = float(fc) + bt/2
+    sec = int(max(5, seconds))
+    bg = json.dumps(bg_data_url) if bg_data_url else "null"
+    g  = float(bg_gain)
+
     return f"""
 <div style="padding:.6rem;border:1px solid #eee;border-radius:10px;">
   <b>Binaural</b> — L {fl:.2f} Hz • R {fr:.2f} Hz • {sec}s {'<span style="margin-left:6px;">🎵 fundo</span>' if bg_data_url else ''}<br/>
@@ -80,35 +87,75 @@ def webaudio_binaural_html(fc: float, beat: float, seconds: int=60, bg_data_url:
   <div style="font-size:.9rem;color:#666">Use fones · volume moderado</div>
 </div>
 <script>
-let ctx=null, l=null, r=null, gL=null, gR=null, timer=null, bgS=null, bgG=null;
+let ctx=null, l=null, r=null, gL=null, gR=null, merger=null, timer=null;
+let bgAudio=null, bgNode=null, bgGain=null;
+
+function cleanup(){{
+  try{{ if(l) l.stop(); if(r) r.stop(); }}catch(e){{}}
+  [l,r,gL,gR,merger].forEach(n=>{{ if(n) try{{ n.disconnect(); }}catch(_e){{}} }});
+  if(bgAudio){{ try{{ bgAudio.pause(); bgAudio.src=''; }}catch(_e){{}} bgAudio=null; }}
+  if(bgNode)  {{ try{{ bgNode.disconnect(); }}catch(_e){{}} bgNode=null; }}
+  if(bgGain)  {{ try{{ bgGain.disconnect(); }}catch(_e){{}} bgGain=null; }}
+  if(ctx)     {{ try{{ ctx.close(); }}catch(_e){{}} ctx=null; }}
+  if(timer) clearTimeout(timer);
+}}
+
 async function start(){{
-  if(ctx) return; ctx=new (window.AudioContext||window.webkitAudioContext)();
-  l=ctx.createOscillator(); r=ctx.createOscillator(); l.type='sine'; r.type='sine';
+  if(ctx) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // --- Binaural (L/R) ---
+  l = ctx.createOscillator(); r = ctx.createOscillator();
+  l.type='sine'; r.type='sine';
   l.frequency.value={fl:.6f}; r.frequency.value={fr:.6f};
-  gL=ctx.createGain(); gR=ctx.createGain(); gL.gain.value=0.05; gR.gain.value=0.05;
-  const merger=ctx.createChannelMerger(2);
-  l.connect(gL).connect(merger,0,0); r.connect(gR).connect(merger,0,1); merger.connect(ctx.destination);
+  gL = ctx.createGain(); gR = ctx.createGain();
+  gL.gain.value = 0.05; gR.gain.value = 0.05;
+  merger = ctx.createChannelMerger(2);
+  l.connect(gL).connect(merger,0,0); r.connect(gR).connect(merger,0,1);
+  merger.connect(ctx.destination);
   l.start(); r.start();
-  const bg={bg}; if(bg){{
+
+  // --- Música de fundo via <audio> ---
+  const bg = {bg};
+  if (bg) {{
     try {{
-      bgG=ctx.createGain(); bgG.gain.value={g:.4f};
-      const res=await fetch(bg); const arr=await res.arrayBuffer(); const buf=await ctx.decodeAudioData(arr);
-      bgS=ctx.createBufferSource(); bgS.buffer=buf; bgS.loop=true;
-      const split=ctx.createChannelSplitter(2); const mono=ctx.createChannelMerger(2);
-      const a=ctx.createGain(); const b=ctx.createGain(); a.gain.value=0.5; b.gain.value=0.5;
-      bgS.connect(split); split.connect(a,0); split.connect(b,1); a.connect(mono,0,0); b.connect(mono,0,0);
-      mono.connect(bgG).connect(ctx.destination); bgS.start();
-    }} catch(e){{ console.warn(e); }}
+      bgAudio = new Audio(bg);
+      bgAudio.loop = true;
+      // Alguns navegadores só tocam após gesto do usuário — aqui já veio do clique
+      await bgAudio.play().catch(()=>{{ /* se falhar, tentaremos via node mesmo assim */ }});
+      bgNode = ctx.createMediaElementSource(bgAudio);
+      bgGain = ctx.createGain(); bgGain.gain.value = {g:.4f};
+
+      // Forçar MONO: somar L/R e mandar aos dois canais
+      const splitter = ctx.createChannelSplitter(2);
+      const mergerMono = ctx.createChannelMerger(2);
+      const gA = ctx.createGain(); gA.gain.value = 0.5;
+      const gB = ctx.createGain(); gB.gain.value = 0.5;
+
+      bgNode.connect(splitter);
+      splitter.connect(gA, 0);
+      splitter.connect(gB, 1);
+      gA.connect(mergerMono, 0, 0);
+      gB.connect(mergerMono, 0, 0);
+      mergerMono.connect(bgGain).connect(ctx.destination);
+      // Se o play inicial falhou (autoplay policy), tentar novamente agora que temos contexto ativo
+      try {{ await bgAudio.play(); }} catch(e) {{ console.warn('Fundo não pôde iniciar:', e); }}
+    }} catch(e) {{
+      console.warn('Erro no fundo:', e);
+    }}
   }}
-  timer=setTimeout(stop,{sec*1000});
+
+  timer = setTimeout(()=>stop(), {sec*1000});
 }}
+
 function stop(){{
-  if(!ctx) return; try{{l.stop();r.stop();}}catch(e){{}}
-  if(bgS) try{{bgS.stop();}}catch(e){{}}
-  try{{ctx.close();}}catch(e){{}} ctx=null;l=r=gL=gR=bgS=bgG=null; if(timer) clearTimeout(timer);
+  cleanup();
 }}
-document.getElementById('bplay').onclick=start; document.getElementById('bstop').onclick=stop;
-</script>"""
+
+document.getElementById('bplay').onclick = start;
+document.getElementById('bstop').onclick  = stop;
+</script>
+"""
 
 # ----------------- UI -----------------
 st.title("🌿 Clínica Holística — MVP")
