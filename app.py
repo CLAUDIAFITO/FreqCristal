@@ -1,8 +1,8 @@
-# app.py — MVP Clínico Holístico (com keys únicas)
-# Funcionalidades: Pacientes, Anamnese, Agenda, Planner de Sessão,
-# Frequências, Binaural (com música de fundo), Cama de Cristal,
-# Fitoterapia, Cristais, Financeiro, Biblioteca.
-# Variáveis de ambiente (Secrets): SUPABASE_URL, SUPABASE_KEY (anon)
+# app.py — MVP Clínico Holístico (atualizado com Anamnese Avançada legível)
+# Funcionalidades: Pacientes, Anamnese (perguntas no BD + resumo claro),
+# Agenda, Planner de Sessão, Frequências, Binaural (com música de fundo),
+# Cama de Cristal, Fitoterapia, Cristais, Financeiro, Biblioteca.
+# Secrets/ENV: SUPABASE_URL, SUPABASE_KEY (anon)
 
 import os, io, json, wave, base64, time, pathlib
 from datetime import datetime, timedelta, date
@@ -23,7 +23,7 @@ try:
 except Exception:
     sb = None
 
-st.set_page_config(page_title="Programa Terapias Claudia", layout="wide")
+st.set_page_config(page_title="Clínica Holística — MVP", layout="wide")
 
 # Banner de build/arquivo para checagem de deploy
 st.markdown(
@@ -61,14 +61,23 @@ def synth_binaural_wav(fc: float, beat: float, seconds: float=20.0, sr: int=4410
         wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(sr); wf.writeframes(y.tobytes())
     return buf.getvalue()
 
-def bytes_to_data_url(raw: bytes, filename: str|None) -> tuple[str, str]:
-    if not raw: return None, None
+# Limite p/ data-URL (evita MessageSizeError)
+MAX_BG_MB = 12  # ~12MB (vira ~16MB base64)
+
+def bytes_to_data_url_safe(raw: bytes, filename: str|None, max_mb: int = MAX_BG_MB):
+    """Converte bytes em data URL, mas recusa arquivos grandes para evitar MessageSizeError."""
+    if not raw:
+        return None, None, None
+    size_mb = len(raw) / (1024*1024)
     name = (filename or "").lower()
     mime = "audio/mpeg"
-    if name.endswith(".wav"): mime="audio/wav"
-    elif name.endswith(".ogg") or name.endswith(".oga"): mime="audio/ogg"
+    if name.endswith(".wav"): mime = "audio/wav"
+    elif name.endswith(".ogg") or name.endswith(".oga"): mime = "audio/ogg"
+
+    if size_mb > max_mb:
+        return None, mime, f"Arquivo de {size_mb:.1f} MB excede o limite de {max_mb} MB para tocar embutido. Use arquivo menor ou Storage/URL."
     b64 = base64.b64encode(raw).decode("ascii")
-    return f"data:{mime};base64,{b64}", mime
+    return f"data:{mime};base64,{b64}", mime, None
 
 def webaudio_binaural_html(fc: float, beat: float, seconds: int=60,
                            bg_data_url: str|None=None, bg_gain: float=0.12):
@@ -121,12 +130,11 @@ async function start(){{
     try {{
       bgAudio = new Audio(bg);
       bgAudio.loop = true;
-      // Alguns navegadores só tocam após gesto do usuário — aqui já veio do clique
-      await bgAudio.play().catch(()=>{{ /* se falhar, tentaremos via node mesmo assim */ }});
+      await bgAudio.play().catch(()=>{{ }});
       bgNode = ctx.createMediaElementSource(bgAudio);
       bgGain = ctx.createGain(); bgGain.gain.value = {g:.4f};
 
-      // Forçar MONO: somar L/R e mandar aos dois canais
+      // Forçar MONO: somar L/R e enviar aos dois canais
       const splitter = ctx.createChannelSplitter(2);
       const mergerMono = ctx.createChannelMerger(2);
       const gA = ctx.createGain(); gA.gain.value = 0.5;
@@ -138,7 +146,6 @@ async function start(){{
       gA.connect(mergerMono, 0, 0);
       gB.connect(mergerMono, 0, 0);
       mergerMono.connect(bgGain).connect(ctx.destination);
-      // Se o play inicial falhou (autoplay policy), tentar novamente agora que temos contexto ativo
       try {{ await bgAudio.play(); }} catch(e) {{ console.warn('Fundo não pôde iniciar:', e); }}
     }} catch(e) {{
       console.warn('Erro no fundo:', e);
@@ -158,7 +165,7 @@ document.getElementById('bstop').onclick  = stop;
 """
 
 # ----------------- UI -----------------
-st.title("🌿 Doce Conexão - Frequencias/Cama de Cristal/Fito")
+st.title("🌿 Clínica Holística — MVP")
 
 tabs = st.tabs([
     "Pacientes","Anamnese","Agenda","Sessão (Planner)","Frequências",
@@ -192,7 +199,7 @@ with tabs[0]:
     if pts:
         st.dataframe(pd.DataFrame(pts),use_container_width=True,hide_index=True)
 
-# ========== Anamnese ==========
+# ========== Anamnese (AVANÇADA) ==========
 with tabs[1]:
     st.subheader("Anamnese — Avançada")
 
@@ -211,7 +218,6 @@ with tabs[1]:
         dfq = dfq[dfq["active"].fillna(True)]
         sections = list(dfq["section"].dropna().unique())
 
-        # formulário com tabs por seção
         with st.form(K("anv","form")):
             tabs_sec = st.tabs(sections)
             respostas = {}
@@ -233,16 +239,15 @@ with tabs[1]:
                         elif qt == "number":
                             val = st.number_input(label, value=float(mn or 0), min_value=float(mn or 0), max_value=float(mx or 9999), step=1.0, key=key)
                         else:
-                            val = st.text_area(label, key=key) if (mx or 0) > 200 else st.text_input(label, key=key)
+                            # text / fallback
+                            val = st.text_input(label, key=key)
 
                         respostas[qk] = val
 
-            # cálculo de score (chakras + indicadores)
+            # ---- cálculo de score (chakras + indicadores/flags) ----
             def score_from_answers(ans: dict) -> dict:
-                # inicia com 0
                 chakras = {k:0.0 for k in ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]}
                 flags = set()
-                # aplica pesos das perguntas
                 for _, row in dfq.iterrows():
                     qk = row["qkey"]; w = row.get("weight") or {}
                     if qk not in ans: continue
@@ -261,8 +266,7 @@ with tabs[1]:
                                 v = 0.0
                             chakras[ch] = chakras.get(ch,0.0) + (float(wt) * v)
 
-                # normalizações simples
-                # Equilíbrio autoavaliado (0–10) podemos reverter para “déficit” (10-v)
+                # Equilíbrio autoavaliado (0–10) → deficit = (10 - valor)
                 for ch_key, eq_key in [
                     ("raiz","raiz_eq"),("sacral","sacral_eq"),("plexo","plexo_eq"),
                     ("cardiaco","cardiaco_eq"),("laringeo","laringeo_eq"),
@@ -271,7 +275,6 @@ with tabs[1]:
                     if eq_key in respostas and isinstance(respostas[eq_key], (int,float)):
                         chakras[ch_key] += max(0.0, 10.0 - float(respostas[eq_key]))
 
-                # índices diretos
                 idx = {
                     "sono": float(respostas.get("sono_qualidade") or 0),
                     "estresse": float(respostas.get("estresse_nivel") or 0),
@@ -281,21 +284,36 @@ with tabs[1]:
 
             score = score_from_answers(respostas)
 
-            # resumo e recomendações iniciais (sugestão)
-            st.markdown("### Resumo")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.write("**Chakras (maior = mais atenção):**")
-                st.json(score["chakras"])
-            with c2:
-                st.write("**Flags:**", ", ".join(score["flags"]) if score["flags"] else "—")
-                st.write("**Índices:**", score["indices"])
+            # ---- RESUMO VISUAL (legível) ----
+            st.markdown("### 🧭 Resumo clínico")
+            CHAKRA_LABEL = {
+                "raiz":"Raiz", "sacral":"Sacral", "plexo":"Plexo Solar", "cardiaco":"Cardíaco",
+                "laringeo":"Laríngeo", "terceiro_olho":"Terceiro Olho", "coronal":"Coronal"
+            }
+            ch_items = sorted(score["chakras"].items(), key=lambda x: x[1], reverse=True)
 
-            recs = []
-            ch_order = sorted(score["chakras"].items(), key=lambda x: x[1], reverse=True)
-            if ch_order:
-                top_ch, _ = ch_order[0]
-                # mapeamento simples p/ frequências iniciais
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Qualidade do sono", f"{int(score['indices'].get('sono',0))}/10")
+            m2.metric("Nível de estresse", f"{int(score['indices'].get('estresse',0))}/10")
+            m3.metric("Ansiedade (autoescala)", f"{int(score['indices'].get('ansiedade',0))}/10")
+
+            if score["flags"]:
+                st.markdown("**Contraindicações/sinais de cautela:**")
+                st.write(" · ".join([f"`{f}`" for f in score["flags"]]))
+            else:
+                st.caption("Nenhuma contraindicação assinalada.")
+
+            st.markdown("**Prioridade por chakra (maior = mais atenção):**")
+            df_ch = pd.DataFrame(
+                [{"Chakra": CHAKRA_LABEL.get(k,k).replace("_"," ").title(), "Atenção (score)": round(v,1)}
+                 for k, v in ch_items]
+            )
+            st.dataframe(df_ch, use_container_width=True, hide_index=True)
+
+            # ---- RECOMENDAÇÕES EM TEXTO CLARO ----
+            st.markdown("### 📝 Recomendações iniciais")
+            if ch_items:
+                top_ch, _val = ch_items[0]
                 mapa_freq = {
                     "raiz":["SOL396","CHAKRA_RAIZ"],
                     "sacral":["SOL417","CHAKRA_SACRAL"],
@@ -305,21 +323,46 @@ with tabs[1]:
                     "terceiro_olho":["SOL852","CHAKRA_TERCEIRO_OLHO"],
                     "coronal":["SOL963","CHAKRA_CORONAL"]
                 }
-                recs.append({"frequencias_sugeridas": mapa_freq.get(top_ch, ["SOL528"])})
+                sugeridas = mapa_freq.get(top_ch, ["SOL528"])
+                st.markdown(
+                    f"- **Frequências de foco** (chakra principal: **{CHAKRA_LABEL.get(top_ch, top_ch).title()}**): "
+                    + ", ".join([f"`{c}`" for c in sugeridas])
+                )
 
-            # contraindicações que afetam binaural/herbais
+            sono = float(score["indices"].get("sono",0))
+            estresse = float(score["indices"].get("estresse",0))
+            ans = float(score["indices"].get("ansiedade",0))
             if "epilepsia" in score["flags"]:
-                recs.append({"binaural": "evitar batidas altas (>10Hz); preferir sem binaural"})
+                st.markdown("- **Binaural:** evitar batidas altas; preferir **sem binaural** ou usar < 8 Hz com cautela.")
+            else:
+                if sono <= 5:
+                    st.markdown("- **Binaural:** **Delta 2–3 Hz** (10–20 min) → **Theta 5–6 Hz** (10–15 min).")
+                elif estresse >= 7 or ans >= 7:
+                    st.markdown("- **Binaural:** **Theta 5–6 Hz** (15–20 min) e finalizar em **Alpha 10 Hz** (5–10 min).")
+                else:
+                    st.markdown("- **Binaural:** **Alpha 10 Hz** (10–15 min); opcional **Theta 6 Hz** curto (5–10 min).")
+
+            st.markdown("- **Cama de Cristal:** sequência padrão **7×5 min**; dar **ênfase** no chakra principal (+2–3 min).")
+
             if "gravidez" in score["flags"]:
-                recs.append({"fitoterapia": "evitar ervas com contraindicação na gestação; revisar plano"})
-            if "marcapasso" in score["flags"]:
-                recs.append({"eletromagnético": "evitar campos/ímanes; utilizar apenas luz/sons seguros"})
+                st.markdown("- **Fitoterapia:** revisar contraindicações na gestação; usar apenas ervas **seguras**.")
+            elif "sedativos" in score["flags"]:
+                st.markdown("- **Fitoterapia:** atenção a **interações** com sedativos; preferir doses baixas.")
+            else:
+                st.markdown("- **Fitoterapia:** plano suave (ex.: **Camomila + Cidreira**, 2×/dia por 2–3 semanas).")
 
-            if recs:
-                st.markdown("### Recomendações iniciais (automáticas)")
-                st.json(recs)
+            agua = respostas.get("agua"); af = respostas.get("atividade_fisica")
+            hab = []
+            if isinstance(agua,(int,float)) and agua < 6: hab.append("Aumentar ingestão de água (≥ 6 copos/dia).")
+            if isinstance(af,(int,float)) and af < 2:   hab.append("Mover o corpo ao menos 2–3×/semana.")
+            if respostas.get("cafeina",0) and float(respostas.get("cafeina")) > 3:
+                hab.append("Reduzir cafeína após 16h.")
+            if hab:
+                st.markdown("- **Hábitos:** " + " ".join(hab))
 
-            # Salvar
+            st.caption("Observação: recomendações iniciais — ajustar conforme avaliação clínica e resposta do paciente.")
+
+            # ---- Salvar ----
             if st.form_submit_button("Salvar anamnese", use_container_width=True):
                 payload = {"patient_id": mapa.get(psel),
                            "respostas": respostas,
@@ -429,15 +472,22 @@ with tabs[5]:
     dur     = int(c3.number_input("Duração (s)",10,900,120,5, key=K("binaural","dur")))
 
     st.markdown("🎵 Música de fundo (opcional)")
-    bg_up   = st.file_uploader("MP3/WAV/OGG",type=["mp3","wav","ogg"], key=K("binaural","bg_file"))
+    bg_up   = st.file_uploader("MP3/WAV/OGG (até 12MB)",type=["mp3","wav","ogg"], key=K("binaural","bg_file"))
     bg_gain = st.slider("Volume do fundo",0.0,0.4,0.12,0.01, key=K("binaural","bg_gain"))
-    raw = None
-    if bg_up:
-        raw = bg_up.read()
-        st.audio(raw)  # prévia
-    bg_url,_ = bytes_to_data_url(raw, bg_up.name if bg_up else None)
 
-    st.components.v1.html(webaudio_binaural_html(carrier,beat,dur,bg_url,bg_gain), height=260)
+    raw = None; filename = None
+    if bg_up:
+        raw = bg_up.read(); filename = bg_up.name
+        st.audio(raw)  # prévia no Streamlit
+
+    bg_url, _mime, err = bytes_to_data_url_safe(raw, filename) if raw else (None, None, None)
+    if err:
+        st.warning(f"⚠️ {err}")
+
+    st.components.v1.html(
+        webaudio_binaural_html(carrier, beat, dur, bg_url, bg_gain),
+        height=280
+    )
 
     wav = synth_binaural_wav(carrier,beat,20,44100,0.2)
     st.audio(wav, format="audio/wav")
