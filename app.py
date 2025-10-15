@@ -1,11 +1,8 @@
-# app.py — MVP Clínico Holístico (atualizado com Anamnese Avançada legível)
-# Funcionalidades: Pacientes, Anamnese (perguntas no BD + resumo claro),
-# Agenda, Planner de Sessão, Frequências, Binaural (com música de fundo),
-# Cama de Cristal, Fitoterapia, Cristais, Financeiro, Biblioteca.
+# app.py — MVP Clínico Holístico (Anamnese avançada + Binaural completo + Editor da Cama)
 # Secrets/ENV: SUPABASE_URL, SUPABASE_KEY (anon)
 
 import os, io, json, wave, base64, time, pathlib
-from datetime import datetime, timedelta, date
+from datetime import datetime, date
 from typing import Optional
 
 import numpy as np
@@ -49,7 +46,6 @@ def synth_binaural_wav(fc: float, beat: float, seconds: float=20.0, sr: int=4410
     bt = abs(float(beat)); fl = max(1.0, float(fc)-bt/2); fr = float(fc)+bt/2
     t = np.linspace(0, seconds, int(sr*seconds), endpoint=False)
     left = np.sin(2*np.pi*fl*t); right = np.sin(2*np.pi*fr*t)
-    # fade in/out
     ramp = int(sr*0.02)
     if ramp > 0:
         left[:ramp]*=np.linspace(0,1,ramp); right[:ramp]*=np.linspace(0,1,ramp)
@@ -239,9 +235,7 @@ with tabs[1]:
                         elif qt == "number":
                             val = st.number_input(label, value=float(mn or 0), min_value=float(mn or 0), max_value=float(mx or 9999), step=1.0, key=key)
                         else:
-                            # text / fallback
                             val = st.text_input(label, key=key)
-
                         respostas[qk] = val
 
             # ---- cálculo de score (chakras + indicadores/flags) ----
@@ -464,9 +458,22 @@ with tabs[4]:
                 st.success("Salvo."); st.cache_data.clear()
 
 # ========== Binaural ==========
-# ========== Binaural ==========
 with tabs[5]:
     st.subheader("Binaural — player rápido")
+
+    # --- atalhos de faixa (inclui Gamma) ---
+    band_map = {
+        "Delta (1–4 Hz)": 3.0,
+        "Theta (4–8 Hz)": 6.0,
+        "Alpha (8–12 Hz)": 10.0,
+        "Beta baixa (12–18 Hz)": 15.0,
+        "Gamma (30–45 Hz)": 40.0,
+    }
+    bcol1, bcol2 = st.columns([2,1])
+    faixa = bcol1.selectbox("Faixa de ondas (atalho)", list(band_map.keys()), index=2, key=K("binaural","faixa"))
+    if bcol2.button("Aplicar faixa", key=K("binaural","faixa_apply")):
+        st.session_state[K("binaural","beat")] = float(band_map[faixa])
+        st.success(f"Batida ajustada para {band_map[faixa]} Hz")
 
     # --- presets de tratamento (opcional) ---
     pres = sb_select("binaural_presets","id,nome,carrier_hz,beat_hz,duracao_min,notas",order="nome")
@@ -484,12 +491,12 @@ with tabs[5]:
         st.session_state[K("binaural","dur")]     = int((p.get("duracao_min") or 10) * 60)
         st.success(f"Preset aplicado: {preset_escolhido}")
 
-    # --- parâmetros manuais (mantidos) ---
+    # --- parâmetros manuais ---
     c1,c2,c3=st.columns(3)
     carrier = c1.number_input("Carrier (Hz)",50.0,1000.0,
                               float(st.session_state.get(K("binaural","carrier"),220.0)),
                               1.0, key=K("binaural","carrier"))
-    beat    = c2.number_input("Batida (Hz)",0.5,40.0,
+    beat    = c2.number_input("Batida (Hz)",0.5,45.0,
                               float(st.session_state.get(K("binaural","beat"),10.0)),
                               0.5, key=K("binaural","beat"))
     dur     = int(c3.number_input("Duração (s)",10,3600,
@@ -503,7 +510,6 @@ with tabs[5]:
     mL, mR = st.columns(2)
     mL.metric("Esquerdo (L)", f"{fL:.2f} Hz")
     mR.metric("Direito (R)",  f"{fR:.2f} Hz")
-
     with st.expander("Como funciona?"):
         st.markdown(
             """
@@ -516,10 +522,11 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
 - **Theta** (4–8 Hz): imaginação, introspecção  
 - **Alpha** (8–12 Hz): relaxamento atento, foco calmo  
 - **Beta baixa** (12–18 Hz): atenção/alerta leve (use com cautela)
+- **Gamma** (30–45 Hz): estimulação cognitiva breve (ex.: 40 Hz)
             """
         )
 
-    # --- música de fundo (igual antes) ---
+    # --- música de fundo (opcional) ---
     st.markdown("🎵 Música de fundo (opcional)")
     bg_up   = st.file_uploader("MP3/WAV/OGG (até 12MB)",type=["mp3","wav","ogg"], key=K("binaural","bg_file"))
     bg_gain = st.slider("Volume do fundo",0.0,0.4,0.12,0.01, key=K("binaural","bg_gain"))
@@ -529,61 +536,137 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
         raw = bg_up.read(); filename = bg_up.name
         st.audio(raw)  # prévia
 
-    # usa helper com limite para evitar MessageSizeError
     bg_url, _mime, err = bytes_to_data_url_safe(raw, filename) if raw else (None, None, None)
     if err:
         st.warning(f"⚠️ {err}")
 
-    # --- player WebAudio (com fundo mono) ---
     st.components.v1.html(
         webaudio_binaural_html(carrier, beat, dur, bg_url, bg_gain),
         height=300
     )
 
-    # --- render WAV curto p/ download (mantido) ---
     wav = synth_binaural_wav(carrier,beat,20,44100,0.2)
     st.audio(wav, format="audio/wav")
     st.download_button("Baixar WAV (20s)", data=wav,
                        file_name=f"binaural_{int(carrier)}_{beat:.1f}.wav",
                        mime="audio/wav", key=K("binaural","dl_wav"))
 
-    # --- quadro rápido: escolha de faixa por objetivo ---
     with st.expander("Sugestões rápidas por objetivo"):
         st.markdown(
             """
 - **Relaxar/ansiedade** → **Theta 5–6 Hz** (15–20 min) e fechar em **Alpha 10 Hz** (5–10 min).
 - **Sono** → **Delta 2–3 Hz** (10–20 min) → **Theta 5–6 Hz** (10–15 min).
-- **Foco calmo** → **Alpha 10 Hz** (10–15 min).  
+- **Foco calmo** → **Alpha 10 Hz** (10–15 min).
+- **Gamma 40 Hz** → estimulação breve (5–12 min), volume baixo.  
 > **Atenção:** epilepsia, marcapasso e outras condições pedem ajustes/evitar binaural.
             """
         )
 
-
 # ========== Cama de Cristal ==========
 with tabs[6]:
     st.subheader("Cama — presets de 7 luzes")
+
+    # Carrega presets existentes
     camas = sb_select("cama_presets","id,nome,etapas,duracao_min,notas",order="nome")
     nomes = [c["nome"] for c in camas]
     sel = st.selectbox("Preset", nomes or ["—"], key=K("cama","sel"))
-    if nomes:
-        c = [x for x in camas if x["nome"]==sel][0]
+
+    # Utilitários
+    CHAKRAS = ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]
+    CORES   = ["vermelho","laranja","amarelo","verde","azul","anil","violeta","branco"]
+
+    def _df_from_preset(preset):
         try:
-            etapas = pd.DataFrame(c["etapas"])
-            st.dataframe(etapas,use_container_width=True,hide_index=True)
+            etapas = preset.get("etapas") or []
+            df = pd.DataFrame(etapas)
         except Exception:
-            st.write(c.get("etapas"))
-        st.caption(f"Duração: {c.get('duracao_min','?')} min — {c.get('notas','')}")
-    with st.expander("Criar/editar preset"):
-        nome = st.text_input("Nome do preset", value="Chakras 7x5", key=K("cama","nome"))
-        etapas_json = st.text_area("Etapas (JSON)", value='[{"ordem":1,"chakra":"raiz","cor":"vermelho","min":5}]', key=K("cama","etapas"))
-        dur_min = st.number_input("Duração total", 5, 180, 35, key=K("cama","dur"))
-        notas = st.text_input("Notas", key=K("cama","notas"))
-        if st.button("Salvar preset", key=K("cama","btn_salvar")) and sb:
-            sb.table("cama_presets").upsert({
-                "nome":nome,"etapas":json.loads(etapas_json),
-                "duracao_min":int(dur_min),"notas":notas
-            }).execute()
-            st.success("Preset salvo."); st.cache_data.clear()
+            df = pd.DataFrame(columns=["ordem","chakra","cor","min"])
+        for col in ["ordem","chakra","cor","min"]:
+            if col not in df.columns: df[col] = None
+        df["ordem"] = pd.to_numeric(df["ordem"], errors="coerce")
+        df = df.sort_values("ordem", na_position="last").reset_index(drop=True)
+        df["min"] = pd.to_numeric(df["min"], errors="coerce").fillna(5).astype(int)
+        df["chakra"] = df["chakra"].fillna("").astype(str)
+        df["cor"] = df["cor"].fillna("").astype(str)
+        df["ordem"] = range(1, len(df)+1)
+        return df[["ordem","chakra","cor","min"]]
+
+    # Mostra preset selecionado
+    current_df = pd.DataFrame(columns=["ordem","chakra","cor","min"])
+    preset_dict = None
+    if nomes:
+        preset_dict = [x for x in camas if x["nome"]==sel][0]
+        current_df  = _df_from_preset(preset_dict)
+        st.caption(f"Duração total: **{int(current_df['min'].sum())} min** — {preset_dict.get('notas','')}")
+
+    # ===== Editor visual (tabela) =====
+    st.markdown("### Editar preset (tabela)")
+
+    col_a, col_b = st.columns([2,1])
+    nome_edit = col_a.text_input("Nome do preset",
+                                 value=(preset_dict["nome"] if preset_dict else "Chakras 7x5"),
+                                 key=K("cama","nome"))
+    notas_edit = col_b.text_input("Notas (opcional)",
+                                  value=(preset_dict.get("notas","") if preset_dict else ""),
+                                  key=K("cama","notas"))
+
+    edited = st.data_editor(
+        current_df if not current_df.empty else pd.DataFrame(
+            [{"ordem":i+1,"chakra":CHAKRAS[i] if i<len(CHAKRAS) else "", "cor":CORES[i] if i<len(CORES) else "", "min":5}
+             for i in range(7)]
+        ),
+        key=K("cama","editor"),
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        column_config={
+            "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1, help="Sequência de aplicação"),
+            "chakra": st.column_config.SelectboxColumn("Chakra", options=CHAKRAS, help="Selecione o chakra"),
+            "cor": st.column_config.SelectboxColumn("Cor", options=CORES, help="Cor da luz"),
+            "min": st.column_config.NumberColumn("Minutos", min_value=1, step=1, help="Duração desta etapa")
+        }
+    )
+
+    if not edited.empty:
+        edited = edited.copy()
+        edited["ordem"] = pd.to_numeric(edited["ordem"], errors="coerce").fillna(0).astype(int)
+        edited = edited.sort_values("ordem").reset_index(drop=True)
+        edited["ordem"] = range(1, len(edited)+1)
+        dur_total = int(edited["min"].sum())
+        st.caption(f"🕒 Duração total prevista: **{dur_total} min**")
+
+    c1, c2, _ = st.columns([1,1,2])
+    salvar   = c1.button("💾 Salvar preset", key=K("cama","save"))
+    duplicar = c2.button("🧬 Duplicar como…", key=K("cama","dup"))
+
+    if (salvar or duplicar) and sb:
+        target_name = nome_edit.strip()
+        if duplicar and preset_dict and target_name == preset_dict["nome"]:
+            st.error("Informe um **novo nome** para duplicar.")
+        else:
+            etapas_json = []
+            for _, r in edited.iterrows():
+                ch = (r.get("chakra") or "").strip()
+                cr = (r.get("cor") or "").strip()
+                mn = int(max(1, int(r.get("min") or 1)))
+                if not ch:
+                    continue
+                etapas_json.append({
+                    "ordem": int(r.get("ordem") or 1),
+                    "chakra": ch,
+                    "cor": cr if cr else None,
+                    "min": mn
+                })
+
+            payload = {
+                "nome": target_name,
+                "etapas": etapas_json,
+                "duracao_min": int(sum(e["min"] for e in etapas_json)),
+                "notas": (notas_edit or None)
+            }
+            sb.table("cama_presets").upsert(payload).execute()
+            st.success(("Duplicado como" if duplicar else "Salvo") + f" **{target_name}**.")
+            st.cache_data.clear()
 
 # ========== Fitoterapia ==========
 with tabs[7]:
