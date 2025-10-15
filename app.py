@@ -1,7 +1,6 @@
 # app.py — MVP do zero: Pacientes, Anamnese, Agenda, Sessão (Planner),
 # Frequências, Binaural, Cama de Cristal, Fitoterapia, Cristais, Financeiro, Biblioteca
-import os, time, pathlib
-st.markdown(f"🛠️ **BUILD:** {time.strftime('%Y-%m-%d %H:%M:%S')} — **arquivo:** `{pathlib.Path(__file__).resolve()}` — **cwd:** `{os.getcwd()}`")
+
 
 import os, io, json, wave, base64
 from datetime import datetime, timedelta, date
