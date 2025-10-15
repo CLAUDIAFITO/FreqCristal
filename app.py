@@ -20,7 +20,7 @@ try:
 except Exception:
     sb = None
 
-st.set_page_config(page_title="Clínica Holística — MVP", layout="wide")
+st.set_page_config(page_title="Programa Frequencias e Fito", layout="wide")
 
 # Banner de build/arquivo para checagem de deploy
 st.markdown(
@@ -161,7 +161,7 @@ document.getElementById('bstop').onclick  = stop;
 """
 
 # ----------------- UI -----------------
-st.title("🌿 Clínica Holística — MVP")
+st.title("🔗 DOCE CONEXÃO")
 
 tabs = st.tabs([
     "Pacientes","Anamnese","Agenda","Sessão (Planner)","Frequências",
