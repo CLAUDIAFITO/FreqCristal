@@ -464,13 +464,62 @@ with tabs[4]:
                 st.success("Salvo."); st.cache_data.clear()
 
 # ========== Binaural ==========
+# ========== Binaural ==========
 with tabs[5]:
     st.subheader("Binaural — player rápido")
-    c1,c2,c3=st.columns(3)
-    carrier = c1.number_input("Carrier (Hz)",50.0,1000.0,220.0,1.0, key=K("binaural","carrier"))
-    beat    = c2.number_input("Batida (Hz)",0.5,40.0,10.0,0.5, key=K("binaural","beat"))
-    dur     = int(c3.number_input("Duração (s)",10,900,120,5, key=K("binaural","dur")))
 
+    # --- presets de tratamento (opcional) ---
+    pres = sb_select("binaural_presets","id,nome,carrier_hz,beat_hz,duracao_min,notas",order="nome")
+    mapa_pres = {p["nome"]:p for p in pres}
+    cols_top = st.columns([2,1])
+    preset_escolhido = cols_top[0].selectbox(
+        "Tratamento pré-definido (binaural_presets)",
+        list(mapa_pres.keys()) or ["(nenhum)"],
+        key=K("binaural","preset_sel")
+    )
+    if cols_top[1].button("Aplicar preset", key=K("binaural","preset_apply")) and preset_escolhido in mapa_pres:
+        p = mapa_pres[preset_escolhido]
+        st.session_state[K("binaural","carrier")] = float(p.get("carrier_hz") or 220.0)
+        st.session_state[K("binaural","beat")]    = float(p.get("beat_hz") or 10.0)
+        st.session_state[K("binaural","dur")]     = int((p.get("duracao_min") or 10) * 60)
+        st.success(f"Preset aplicado: {preset_escolhido}")
+
+    # --- parâmetros manuais (mantidos) ---
+    c1,c2,c3=st.columns(3)
+    carrier = c1.number_input("Carrier (Hz)",50.0,1000.0,
+                              float(st.session_state.get(K("binaural","carrier"),220.0)),
+                              1.0, key=K("binaural","carrier"))
+    beat    = c2.number_input("Batida (Hz)",0.5,40.0,
+                              float(st.session_state.get(K("binaural","beat"),10.0)),
+                              0.5, key=K("binaural","beat"))
+    dur     = int(c3.number_input("Duração (s)",10,3600,
+                                  int(st.session_state.get(K("binaural","dur"),120)),
+                                  5, key=K("binaural","dur")))
+
+    # --- cálculo das frequências L/R e explicação ---
+    bt = abs(float(beat))
+    fL = max(20.0, float(carrier) - bt/2.0)
+    fR = float(carrier) + bt/2.0
+    mL, mR = st.columns(2)
+    mL.metric("Esquerdo (L)", f"{fL:.2f} Hz")
+    mR.metric("Direito (R)",  f"{fR:.2f} Hz")
+
+    with st.expander("Como funciona?"):
+        st.markdown(
+            """
+**Binaural** = duas frequências **puras** diferentes em cada ouvido → o cérebro percebe a **diferença** como um tom de batida (**beat**).  
+**Cálculo:** `L = carrier − beat/2` e `R = carrier + beat/2`.  
+Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o cérebro tende a sincronizar em **~10 Hz**.
+
+**Faixas úteis (guia rápida):**
+- **Delta** (1–4 Hz): sono profundo, reparo  
+- **Theta** (4–8 Hz): imaginação, introspecção  
+- **Alpha** (8–12 Hz): relaxamento atento, foco calmo  
+- **Beta baixa** (12–18 Hz): atenção/alerta leve (use com cautela)
+            """
+        )
+
+    # --- música de fundo (igual antes) ---
     st.markdown("🎵 Música de fundo (opcional)")
     bg_up   = st.file_uploader("MP3/WAV/OGG (até 12MB)",type=["mp3","wav","ogg"], key=K("binaural","bg_file"))
     bg_gain = st.slider("Volume do fundo",0.0,0.4,0.12,0.01, key=K("binaural","bg_gain"))
@@ -478,22 +527,37 @@ with tabs[5]:
     raw = None; filename = None
     if bg_up:
         raw = bg_up.read(); filename = bg_up.name
-        st.audio(raw)  # prévia no Streamlit
+        st.audio(raw)  # prévia
 
+    # usa helper com limite para evitar MessageSizeError
     bg_url, _mime, err = bytes_to_data_url_safe(raw, filename) if raw else (None, None, None)
     if err:
         st.warning(f"⚠️ {err}")
 
+    # --- player WebAudio (com fundo mono) ---
     st.components.v1.html(
         webaudio_binaural_html(carrier, beat, dur, bg_url, bg_gain),
-        height=280
+        height=300
     )
 
+    # --- render WAV curto p/ download (mantido) ---
     wav = synth_binaural_wav(carrier,beat,20,44100,0.2)
     st.audio(wav, format="audio/wav")
     st.download_button("Baixar WAV (20s)", data=wav,
                        file_name=f"binaural_{int(carrier)}_{beat:.1f}.wav",
                        mime="audio/wav", key=K("binaural","dl_wav"))
+
+    # --- quadro rápido: escolha de faixa por objetivo ---
+    with st.expander("Sugestões rápidas por objetivo"):
+        st.markdown(
+            """
+- **Relaxar/ansiedade** → **Theta 5–6 Hz** (15–20 min) e fechar em **Alpha 10 Hz** (5–10 min).
+- **Sono** → **Delta 2–3 Hz** (10–20 min) → **Theta 5–6 Hz** (10–15 min).
+- **Foco calmo** → **Alpha 10 Hz** (10–15 min).  
+> **Atenção:** epilepsia, marcapasso e outras condições pedem ajustes/evitar binaural.
+            """
+        )
+
 
 # ========== Cama de Cristal ==========
 with tabs[6]:
