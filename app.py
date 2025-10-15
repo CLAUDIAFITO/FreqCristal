@@ -158,7 +158,7 @@ document.getElementById('bstop').onclick  = stop;
 """
 
 # ----------------- UI -----------------
-st.title("🌿 Clínica Holística — MVP")
+st.title("🌿 Doce Conexão - Frequencias/Cama de Cristal/Fito")
 
 tabs = st.tabs([
     "Pacientes","Anamnese","Agenda","Sessão (Planner)","Frequências",
