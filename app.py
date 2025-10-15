@@ -1,8 +1,10 @@
-# app.py — MVP do zero: Pacientes, Anamnese, Agenda, Sessão (Planner),
-# Frequências, Binaural, Cama de Cristal, Fitoterapia, Cristais, Financeiro, Biblioteca
+# app.py — MVP Clínico Holístico (com keys únicas)
+# Funcionalidades: Pacientes, Anamnese, Agenda, Planner de Sessão,
+# Frequências, Binaural (com música de fundo), Cama de Cristal,
+# Fitoterapia, Cristais, Financeiro, Biblioteca.
+# Variáveis de ambiente (Secrets): SUPABASE_URL, SUPABASE_KEY (anon)
 
-
-import os, io, json, wave, base64
+import os, io, json, wave, base64, time, pathlib
 from datetime import datetime, timedelta, date
 from typing import Optional
 
@@ -11,7 +13,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-# --------- ENV / SUPABASE ----------
+# ----------------- ENV / SUPABASE -----------------
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -21,9 +23,20 @@ try:
 except Exception:
     sb = None
 
-st.set_page_config(page_title="Clínica Holística — MVP", layout="wide")
+st.set_page_config(page_title="Programa Terapias Claudia", layout="wide")
 
-# --------- HELPERS ----------
+# Banner de build/arquivo para checagem de deploy
+st.markdown(
+    f"🛠️ **BUILD:** {time.strftime('%Y-%m-%d %H:%M:%S')} — "
+    f"**arquivo:** `{pathlib.Path(__file__).resolve()}` — **cwd:** `{os.getcwd()}`"
+)
+
+# ----------------- KEYS ÚNICAS -----------------
+def K(*parts: str) -> str:
+    """Gera uma key única estável para widgets: K('aba','secao','campo')."""
+    return "k_" + "_".join(str(p).strip().lower().replace(" ", "_") for p in parts if p)
+
+# ----------------- HELPERS -----------------
 @st.cache_data(ttl=60)
 def sb_select(table, cols="*", order=None, desc=False, limit=None):
     if not sb: return []
@@ -36,8 +49,11 @@ def synth_binaural_wav(fc: float, beat: float, seconds: float=20.0, sr: int=4410
     bt = abs(float(beat)); fl = max(1.0, float(fc)-bt/2); fr = float(fc)+bt/2
     t = np.linspace(0, seconds, int(sr*seconds), endpoint=False)
     left = np.sin(2*np.pi*fl*t); right = np.sin(2*np.pi*fr*t)
-    env = np.linspace(0,1,int(sr*0.02)); env2 = np.linspace(1,0,int(sr*0.02))
-    left[:len(env)]*=env; right[:len(env)]*=env; left[-len(env2):]*=env2; right[-len(env2):]*=env2
+    # fade in/out
+    ramp = int(sr*0.02)
+    if ramp > 0:
+        left[:ramp]*=np.linspace(0,1,ramp); right[:ramp]*=np.linspace(0,1,ramp)
+        left[-ramp:]*=np.linspace(1,0,ramp); right[-ramp:]*=np.linspace(1,0,ramp)
     stereo = np.vstack([left,right]).T * float(amp)
     y = np.int16(np.clip(stereo,-1,1)*32767)
     buf = io.BytesIO()
@@ -45,12 +61,12 @@ def synth_binaural_wav(fc: float, beat: float, seconds: float=20.0, sr: int=4410
         wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(sr); wf.writeframes(y.tobytes())
     return buf.getvalue()
 
-def file_to_data_url(up):
-    if not up: return None, None
-    raw = up.read(); name = up.name.lower()
+def bytes_to_data_url(raw: bytes, filename: str|None) -> tuple[str, str]:
+    if not raw: return None, None
+    name = (filename or "").lower()
     mime = "audio/mpeg"
     if name.endswith(".wav"): mime="audio/wav"
-    elif name.endswith(".ogg"): mime="audio/ogg"
+    elif name.endswith(".ogg") or name.endswith(".oga"): mime="audio/ogg"
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}", mime
 
@@ -64,7 +80,7 @@ def webaudio_binaural_html(fc: float, beat: float, seconds: int=60, bg_data_url:
   <div style="font-size:.9rem;color:#666">Use fones · volume moderado</div>
 </div>
 <script>
-let ctx=null, l=null, r=null, gL=null, gR=null, mix=null, timer=null, bgS=null, bgG=null;
+let ctx=null, l=null, r=null, gL=null, gR=null, timer=null, bgS=null, bgG=null;
 async function start(){{
   if(ctx) return; ctx=new (window.AudioContext||window.webkitAudioContext)();
   l=ctx.createOscillator(); r=ctx.createOscillator(); l.type='sine'; r.type='sine';
@@ -89,48 +105,65 @@ async function start(){{
 function stop(){{
   if(!ctx) return; try{{l.stop();r.stop();}}catch(e){{}}
   if(bgS) try{{bgS.stop();}}catch(e){{}}
-  try{{ctx.close();}}catch(e){{}} ctx=null;l=r=gL=gR=mix=bgS=bgG=null; if(timer) clearTimeout(timer);
+  try{{ctx.close();}}catch(e){{}} ctx=null;l=r=gL=gR=bgS=bgG=null; if(timer) clearTimeout(timer);
 }}
 document.getElementById('bplay').onclick=start; document.getElementById('bstop').onclick=stop;
 </script>"""
 
-# --------- UI ---------
+# ----------------- UI -----------------
 st.title("🌿 Clínica Holística — MVP")
 
-tabs = st.tabs(["Pacientes","Anamnese","Agenda","Sessão (Planner)","Frequências","Binaural","Cama de Cristal","Fitoterapia","Cristais","Financeiro","Biblioteca"])
+tabs = st.tabs([
+    "Pacientes","Anamnese","Agenda","Sessão (Planner)","Frequências",
+    "Binaural","Cama de Cristal","Fitoterapia","Cristais","Financeiro","Biblioteca"
+])
 
 # ========== Pacientes ==========
 with tabs[0]:
     st.subheader("Pacientes")
     if not sb: st.warning("Configure SUPABASE_URL/KEY.")
-    with st.form("f_pac"):
+
+    with st.form(K("pacientes","form")):
         c1,c2,c3=st.columns([2,1,1])
-        nome=c1.text_input("Nome")
-        nasc=c2.date_input("Nascimento", value=None)
-        tel=c3.text_input("Telefone")
-        email=st.text_input("E-mail")
-        notas=st.text_area("Notas")
-        if st.form_submit_button("Salvar"):
-            sb.table("patients").insert({"nome":nome,"nascimento":str(nasc) if nasc else None,"telefone":tel,"email":email}).execute()
-            st.success("Paciente salvo.")
-            st.cache_data.clear()
+        nome = c1.text_input("Nome", key=K("pacientes","form","nome"))
+        nasc = c2.date_input("Nascimento", value=None, key=K("pacientes","form","nascimento"))
+        tel  = c3.text_input("Telefone", key=K("pacientes","form","telefone"))
+        email= st.text_input("E-mail", key=K("pacientes","form","email"))
+        notas= st.text_area("Notas", key=K("pacientes","form","notas"))
+        if st.form_submit_button("Salvar", use_container_width=True):
+            if sb:
+                sb.table("patients").insert({
+                    "nome":nome,
+                    "nascimento":str(nasc) if nasc else None,
+                    "telefone":tel,
+                    "email":email
+                }).execute()
+                st.success("Paciente salvo.")
+                st.cache_data.clear()
+
     pts = sb_select("patients","id,nome,nascimento,telefone,email,created_at",order="created_at",desc=True,limit=50)
-    if pts: st.dataframe(pd.DataFrame(pts),use_container_width=True,hide_index=True)
+    if pts:
+        st.dataframe(pd.DataFrame(pts),use_container_width=True,hide_index=True)
 
 # ========== Anamnese ==========
 with tabs[1]:
     st.subheader("Anamnese")
     pts = sb_select("patients","id,nome",order="created_at",desc=True)
     mapa = {p["nome"]:p["id"] for p in pts}
-    psel = st.selectbox("Paciente", list(mapa.keys()) or ["—"])
+    psel = st.selectbox("Paciente", list(mapa.keys()) or ["—"], key=K("anamnese","paciente"))
+
     col1,col2=st.columns(2)
-    q_sono = col1.slider("Qualidade do sono",0,10,6)
-    q_estresse = col2.slider("Nível de estresse",0,10,5)
-    chks = st.multiselect("Queixas principais",["Ansiedade","Insônia","Cansaço","Dores","Falta de foco"])
-    obs = st.text_area("Observações")
-    if st.button("Salvar anamnese"):
-        sb.table("anamneses").insert({"patient_id": mapa.get(psel),"respostas":{
-            "sono":q_sono,"estresse":q_estresse,"queixas":chks,"obs":obs}}).execute()
+    q_sono = col1.slider("Qualidade do sono",0,10,6, key=K("anamnese","sono"))
+    q_estresse = col2.slider("Nível de estresse",0,10,5, key=K("anamnese","estresse"))
+    chks = st.multiselect("Queixas principais",
+                          ["Ansiedade","Insônia","Cansaço","Dores","Falta de foco"],
+                          key=K("anamnese","queixas"))
+    obs = st.text_area("Observações", key=K("anamnese","obs"))
+    if st.button("Salvar anamnese", key=K("anamnese","btn_salvar")) and sb:
+        sb.table("anamneses").insert({
+            "patient_id": mapa.get(psel),
+            "respostas":{"sono":q_sono,"estresse":q_estresse,"queixas":chks,"obs":obs}
+        }).execute()
         st.success("Anamnese salva.")
 
 # ========== Agenda ==========
@@ -139,15 +172,21 @@ with tabs[2]:
     pts = sb_select("patients","id,nome",order="created_at",desc=True)
     mapa = {p["nome"]:p["id"] for p in pts}
     c1,c2,c3=st.columns(3)
-    psel = c1.selectbox("Paciente", list(mapa.keys()) or ["—"], key="ag_p")
-    start = c2.date_input("Data",value=date.today())
-    hora = c3.time_input("Hora")
-    tipo = st.selectbox("Tipo",["Cama","Binaural","Fitoterapia","Misto"])
-    notas = st.text_input("Notas")
-    if st.button("Agendar"):
+    psel  = c1.selectbox("Paciente", list(mapa.keys()) or ["—"], key=K("agenda","paciente"))
+    start = c2.date_input("Data", value=date.today(), key=K("agenda","data"))
+    hora  = c3.time_input("Hora", key=K("agenda","hora"))
+    tipo  = st.selectbox("Tipo", ["Cama","Binaural","Fitoterapia","Misto"], key=K("agenda","tipo"))
+    notas = st.text_input("Notas", key=K("agenda","notas"))
+    if st.button("Agendar", key=K("agenda","btn_agendar")) and sb:
         dt = datetime.combine(start, hora)
-        sb.table("appointments").insert({"patient_id": mapa.get(psel),"inicio":dt.isoformat(),"tipo":tipo,"notas":notas}).execute()
+        sb.table("appointments").insert({
+            "patient_id": mapa.get(psel),
+            "inicio":dt.isoformat(),
+            "tipo":tipo,
+            "notas":notas
+        }).execute()
         st.success("Agendado!")
+
     ag = sb_select("appointments","id,patient_id,inicio,tipo,notas,patients(nome)",order="inicio",desc=False,limit=100)
     if ag:
         df=pd.DataFrame(ag)
@@ -160,27 +199,29 @@ with tabs[3]:
     st.subheader("Planner de Sessão")
     pts = sb_select("patients","id,nome",order="created_at",desc=True)
     mapa = {p["nome"]:p["id"] for p in pts}
-    psel = st.selectbox("Paciente", list(mapa.keys()) or ["—"], key="pl_p")
+    psel = st.selectbox("Paciente", list(mapa.keys()) or ["—"], key=K("planner","paciente"))
+
     st.markdown("**Escolha rapidamente componentes da sessão:**")
     colA,colB,colC,colD = st.columns(4)
-    # Frequências de suporte
+
     freqs = sb_select("frequencies","code,nome,hz,tipo,chakra,cor",order="code")
     opt_freq = [f'{f["code"]} • {f["nome"]}' for f in freqs]
-    sel_freq = colA.multiselect("Frequências", opt_freq)
-    # Binaural preset
+    sel_freq = colA.multiselect("Frequências", opt_freq, key=K("planner","freqs"))
+
     pres = sb_select("binaural_presets","id,nome,carrier_hz,beat_hz,duracao_min",order="nome")
     mapa_pres = {p["nome"]:p for p in pres}
-    sel_bina = colB.selectbox("Preset Binaural", list(mapa_pres.keys()) or ["(opcional)"])
-    # Cama preset
+    sel_bina = colB.selectbox("Preset Binaural", list(mapa_pres.keys()) or ["(opcional)"], key=K("planner","binaural"))
+
     camas = sb_select("cama_presets","id,nome,etapas,duracao_min",order="nome")
     mapa_cama = {c["nome"]:c for c in camas}
-    sel_cama = colC.selectbox("Preset Cama", list(mapa_cama.keys()) or ["(opcional)"])
-    # Plano fitoterápico
+    sel_cama = colC.selectbox("Preset Cama", list(mapa_cama.keys()) or ["(opcional)"], key=K("planner","cama"))
+
     plans = sb_select("phytotherapy_plans","id,name",order="name")
     mapa_plan = {p["name"]:p for p in plans}
-    sel_plan = colD.selectbox("Plano Fitoterápico", list(mapa_plan.keys()) or ["(opcional)"])
-    notas = st.text_area("Notas da sessão")
-    if st.button("Salvar sessão"):
+    sel_plan = colD.selectbox("Plano Fitoterápico", list(mapa_plan.keys()) or ["(opcional)"], key=K("planner","fitoplan"))
+
+    notas = st.text_area("Notas da sessão", key=K("planner","notas"))
+    if st.button("Salvar sessão", key=K("planner","btn_salvar")) and sb:
         prot = {
             "frequencias":[{"code": s.split(" • ")[0]} for s in sel_freq],
             "binaural": mapa_pres.get(sel_bina),
@@ -188,79 +229,109 @@ with tabs[3]:
             "fitoterapia_plan": mapa_plan.get(sel_plan),
             "notas": notas
         }
-        sb.table("sessions").insert({"patient_id": mapa.get(psel),
-                                     "data": datetime.utcnow().isoformat(),
-                                     "tipo":"Misto","protocolo":prot,"status":"rascunho"}).execute()
+        sb.table("sessions").insert({
+            "patient_id": mapa.get(psel),
+            "data": datetime.utcnow().isoformat(),
+            "tipo":"Misto","protocolo":prot,"status":"rascunho"
+        }).execute()
         st.success("Sessão salva!")
 
 # ========== Frequências ==========
 with tabs[4]:
     st.subheader("Catálogo de Frequências")
     df = pd.DataFrame(sb_select("frequencies","code,nome,hz,tipo,chakra,cor,descricao",order="code"))
-    if not df.empty: st.dataframe(df,use_container_width=True,hide_index=True)
+    if not df.empty:
+        st.dataframe(df,use_container_width=True,hide_index=True)
+
     with st.expander("Adicionar/editar"):
-        with st.form("f_freq"):
-            code = st.text_input("code (único)", value="SOL528")
-            nome = st.text_input("nome", value="Solfeggio 528 Hz")
-            hz = st.number_input("hz", 1.0, 2000.0, 528.0, 1.0)
-            tipo = st.selectbox("tipo",["solfeggio","chakra","custom"],index=0)
-            chakra = st.selectbox("chakra",["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"],index=0)
-            cor = st.text_input("cor")
-            desc = st.text_area("descrição")
-            if st.form_submit_button("Upsert"):
-                sb.table("frequencies").upsert({"code":code,"nome":nome,"hz":hz,"tipo":tipo,"chakra":(chakra or None),"cor":(cor or None),"descricao":desc}).execute()
+        with st.form(K("freq","form")):
+            code = st.text_input("code (único)", value="SOL528", key=K("freq","code"))
+            nome = st.text_input("nome", value="Solfeggio 528 Hz", key=K("freq","nome"))
+            hz   = st.number_input("hz", 1.0, 2000.0, 528.0, 1.0, key=K("freq","hz"))
+            tipo = st.selectbox("tipo",["solfeggio","chakra","custom"],index=0, key=K("freq","tipo"))
+            chakra = st.selectbox("chakra",["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"],index=0, key=K("freq","chakra"))
+            cor  = st.text_input("cor", key=K("freq","cor"))
+            desc = st.text_area("descrição", key=K("freq","desc"))
+            if st.form_submit_button("Upsert", use_container_width=True) and sb:
+                sb.table("frequencies").upsert({
+                    "code":code,"nome":nome,"hz":hz,"tipo":tipo,
+                    "chakra":(chakra or None),"cor":(cor or None),"descricao":desc
+                }).execute()
                 st.success("Salvo."); st.cache_data.clear()
 
 # ========== Binaural ==========
 with tabs[5]:
     st.subheader("Binaural — player rápido")
     c1,c2,c3=st.columns(3)
-    carrier = c1.number_input("Carrier (Hz)",50.0,1000.0,220.0,1.0)
-    beat = c2.number_input("Batida (Hz)",0.5,40.0,10.0,0.5)
-    dur = int(c3.number_input("Duração (s)",10,900,120,5))
+    carrier = c1.number_input("Carrier (Hz)",50.0,1000.0,220.0,1.0, key=K("binaural","carrier"))
+    beat    = c2.number_input("Batida (Hz)",0.5,40.0,10.0,0.5, key=K("binaural","beat"))
+    dur     = int(c3.number_input("Duração (s)",10,900,120,5, key=K("binaural","dur")))
+
     st.markdown("🎵 Música de fundo (opcional)")
-    bg_file = st.file_uploader("MP3/WAV/OGG",type=["mp3","wav","ogg"])
-    bg_gain = st.slider("Volume do fundo",0.0,0.4,0.12,0.01)
-    bg_url,_ = file_to_data_url(bg_file) if bg_file else (None,None)
+    bg_up   = st.file_uploader("MP3/WAV/OGG",type=["mp3","wav","ogg"], key=K("binaural","bg_file"))
+    bg_gain = st.slider("Volume do fundo",0.0,0.4,0.12,0.01, key=K("binaural","bg_gain"))
+    raw = None
+    if bg_up:
+        raw = bg_up.read()
+        st.audio(raw)  # prévia
+    bg_url,_ = bytes_to_data_url(raw, bg_up.name if bg_up else None)
+
     st.components.v1.html(webaudio_binaural_html(carrier,beat,dur,bg_url,bg_gain), height=260)
+
     wav = synth_binaural_wav(carrier,beat,20,44100,0.2)
     st.audio(wav, format="audio/wav")
-    st.download_button("Baixar WAV (20s)", data=wav, file_name=f"binaural_{int(carrier)}_{beat:.1f}.wav", mime="audio/wav")
+    st.download_button("Baixar WAV (20s)", data=wav,
+                       file_name=f"binaural_{int(carrier)}_{beat:.1f}.wav",
+                       mime="audio/wav", key=K("binaural","dl_wav"))
 
 # ========== Cama de Cristal ==========
 with tabs[6]:
     st.subheader("Cama — presets de 7 luzes")
     camas = sb_select("cama_presets","id,nome,etapas,duracao_min,notas",order="nome")
     nomes = [c["nome"] for c in camas]
-    sel = st.selectbox("Preset", nomes or ["—"])
+    sel = st.selectbox("Preset", nomes or ["—"], key=K("cama","sel"))
     if nomes:
         c = [x for x in camas if x["nome"]==sel][0]
-        etapas = pd.DataFrame(c["etapas"])
-        st.dataframe(etapas,use_container_width=True,hide_index=True)
+        try:
+            etapas = pd.DataFrame(c["etapas"])
+            st.dataframe(etapas,use_container_width=True,hide_index=True)
+        except Exception:
+            st.write(c.get("etapas"))
         st.caption(f"Duração: {c.get('duracao_min','?')} min — {c.get('notas','')}")
     with st.expander("Criar/editar preset"):
-        nome = st.text_input("Nome do preset", value="Chakras 7x5")
-        etapas_json = st.text_area("Etapas (JSON)", value='[{"ordem":1,"chakra":"raiz","cor":"vermelho","min":5}]')
-        dur_min = st.number_input("Duração total", 5, 180, 35)
-        notas = st.text_input("Notas")
-        if st.button("Salvar preset"):
-            sb.table("cama_presets").upsert({"nome":nome,"etapas":json.loads(etapas_json),"duracao_min":int(dur_min),"notas":notas}).execute()
+        nome = st.text_input("Nome do preset", value="Chakras 7x5", key=K("cama","nome"))
+        etapas_json = st.text_area("Etapas (JSON)", value='[{"ordem":1,"chakra":"raiz","cor":"vermelho","min":5}]', key=K("cama","etapas"))
+        dur_min = st.number_input("Duração total", 5, 180, 35, key=K("cama","dur"))
+        notas = st.text_input("Notas", key=K("cama","notas"))
+        if st.button("Salvar preset", key=K("cama","btn_salvar")) and sb:
+            sb.table("cama_presets").upsert({
+                "nome":nome,"etapas":json.loads(etapas_json),
+                "duracao_min":int(dur_min),"notas":notas
+            }).execute()
             st.success("Preset salvo."); st.cache_data.clear()
 
 # ========== Fitoterapia ==========
 with tabs[7]:
     st.subheader("Planos fitoterápicos")
     df = pd.DataFrame(sb_select("phytotherapy_plans","id,name,objetivo,posologia,duracao_sem,cadencia,notas",order="name"))
-    if not df.empty: st.dataframe(df,use_container_width=True,hide_index=True)
+    if not df.empty:
+        st.dataframe(df,use_container_width=True,hide_index=True)
     with st.expander("Novo plano"):
-        name = st.text_input("Nome do plano", value="Calma Suave")
-        obj = st.text_area("Objetivo")
-        pos = st.text_area("Posologia (JSON)", value='[{"erva":"Camomila","forma":"infusão","dose":"200 ml","frequencia":"2x/dia","duracao":"15 dias"}]')
-        durw = st.number_input("Duração (semanas)",1,52,3)
-        cad = st.text_input("Cadência", value="uso diário")
-        if st.button("Salvar plano"):
-            sb.table("phytotherapy_plans").upsert({"name":name,"objetivo":obj,"posologia":json.loads(pos),"duracao_sem":int(durw),"cadencia":cad}).execute()
-            st.success("Plano salvo."); st.cache_data.clear()
+        with st.form(K("phyto","form")):
+            name = st.text_input("Nome do plano", value="Calma Suave", key=K("phyto","nome"))
+            obj  = st.text_area("Objetivo", key=K("phyto","objetivo"))
+            pos  = st.text_area("Posologia (JSON)",
+                                value='[{"erva":"Camomila","forma":"infusão","dose":"200 ml","frequencia":"2x/dia","duracao":"15 dias"}]',
+                                key=K("phyto","posologia"))
+            durw = st.number_input("Duração (semanas)",1,52,3, key=K("phyto","duracao"))
+            cad  = st.text_input("Cadência", value="uso diário", key=K("phyto","cadencia"))
+            notas = st.text_area("Notas", key=K("phyto","notas"))
+            if st.form_submit_button("Salvar plano", use_container_width=True) and sb:
+                sb.table("phytotherapy_plans").upsert({
+                    "name":name,"objetivo":obj,"posologia":json.loads(pos),
+                    "duracao_sem":int(durw),"cadencia":cad,"notas":notas
+                }).execute()
+                st.success("Plano salvo."); st.cache_data.clear()
 
 # ========== Cristais ==========
 with tabs[8]:
@@ -268,26 +339,33 @@ with tabs[8]:
     df = pd.DataFrame(sb_select("crystals","id,name,chakra,color,keywords,benefits,pairing_freq,notes",order="name"))
     if not df.empty:
         st.dataframe(df[["name","chakra","color","keywords"]],use_container_width=True,hide_index=True)
-        sel = st.selectbox("Detalhes", df["name"].tolist())
+        sel = st.selectbox("Detalhes", df["name"].tolist(), key=K("cristais","sel"))
         row = df[df["name"]==sel].iloc[0]
         st.write("**Benefícios:**", row.get("benefits"))
         st.write("**Combinações de frequência:**", row.get("pairing_freq"))
         st.caption(row.get("notes") or "")
     with st.expander("Adicionar cristal"):
-        name = st.text_input("Nome", value="Quartzo Rosa")
-        chakra = st.multiselect("Chakras", ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"])
-        color = st.text_input("Cores (separe por vírgula)", value="rosa")
-        kw = st.text_input("Palavras-chave (vírgula)", value="acolhimento,autoamor")
-        bens = st.text_area("Benefícios (um por linha)", value="Suaviza emoções\nApoia autocuidado")
-        pair = st.text_area("Pairing (JSON)", value='{"hz":[528,639],"solfeggio":["SOL528","SOL639"],"binaural":["alpha","theta"]}')
-        if st.button("Salvar cristal"):
-            sb.table("crystals").upsert({
-                "name":name,"chakra":chakra,"color":[c.strip() for c in color.split(",") if c.strip()],
-                "keywords":[k.strip() for k in kw.split(",") if k.strip()],
-                "benefits":[b.strip() for b in bens.splitlines() if b.strip()],
-                "pairing_freq": json.loads(pair)
-            }).execute()
-            st.success("Cristal salvo."); st.cache_data.clear()
+        with st.form(K("cristais","form")):
+            name = st.text_input("Nome", value="Quartzo Rosa", key=K("cristais","nome"))
+            chakra = st.multiselect("Chakras",
+                                    ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"],
+                                    key=K("cristais","chakras"))
+            color = st.text_input("Cores (separe por vírgula)", value="rosa", key=K("cristais","cores"))
+            kw    = st.text_input("Palavras-chave (vírgula)", value="acolhimento,autoamor", key=K("cristais","keywords"))
+            bens  = st.text_area("Benefícios (um por linha)", value="Suaviza emoções\nApoia autocuidado", key=K("cristais","beneficios"))
+            pair  = st.text_area("Pairing (JSON)", value='{"hz":[528,639],"solfeggio":["SOL528","SOL639"],"binaural":["alpha","theta"]}', key=K("cristais","pairing"))
+            notas = st.text_area("Notas", key=K("cristais","notas"))
+            if st.form_submit_button("Salvar cristal", use_container_width=True) and sb:
+                sb.table("crystals").upsert({
+                    "name":name,
+                    "chakra":chakra,
+                    "color":[c.strip() for c in color.split(",") if c.strip()],
+                    "keywords":[k.strip() for k in kw.split(",") if k.strip()],
+                    "benefits":[b.strip() for b in bens.splitlines() if b.strip()],
+                    "pairing_freq": json.loads(pair),
+                    "notes": notas or None
+                }).execute()
+                st.success("Cristal salvo."); st.cache_data.clear()
 
 # ========== Financeiro ==========
 with tabs[9]:
@@ -296,17 +374,26 @@ with tabs[9]:
     if not prices.empty:
         prices["valor"] = prices["valor_cents"]/100
         st.dataframe(prices[["item","valor","ativo"]],use_container_width=True,hide_index=True)
+
     p_pac = sb_select("patients","id,nome",order="created_at",desc=True)
     mapa = {p["nome"]:p["id"] for p in p_pac}
-    with st.form("pay"):
+    with st.form(K("financeiro","form")):
         c1,c2,c3 = st.columns(3)
-        pac = c1.selectbox("Paciente", list(mapa.keys()) or ["—"])
-        item = c2.selectbox("Item", prices["item"].tolist() if not prices.empty else ["Sessão"])
-        valor = c3.number_input("Valor (R$)", 0.0, 9999.0, float(prices.loc[prices["item"]==item,"valor"].iloc[0]) if not prices.empty else 150.0, 10.0)
-        metodo = st.selectbox("Método", ["PIX","Cartão","Dinheiro"])
-        obs = st.text_input("Obs")
-        if st.form_submit_button("Registrar pagamento"):
-            sb.table("payments").insert({"patient_id": mapa.get(pac),"item":item,"valor_cents":int(round(valor*100)),"metodo":metodo,"obs":obs}).execute()
+        pac   = c1.selectbox("Paciente", list(mapa.keys()) or ["—"], key=K("fin","paciente"))
+        items_list = prices["item"].tolist() if not prices.empty else ["Sessão"]
+        item  = c2.selectbox("Item", items_list, key=K("fin","item"))
+        valor_default = float(prices.loc[prices["item"]==item,"valor"].iloc[0]) if (not prices.empty and item in items_list) else 150.0
+        valor = c3.number_input("Valor (R$)", 0.0, 9999.0, valor_default, 10.0, key=K("fin","valor"))
+        metodo= st.selectbox("Método", ["PIX","Cartão","Dinheiro"], key=K("fin","metodo"))
+        obs   = st.text_input("Obs", key=K("fin","obs"))
+        if st.form_submit_button("Registrar pagamento", use_container_width=True) and sb:
+            sb.table("payments").insert({
+                "patient_id": mapa.get(pac),
+                "item": item,
+                "valor_cents": int(round(valor*100)),
+                "metodo": metodo,
+                "obs": obs
+            }).execute()
             st.success("Pagamento lançado.")
     pays = pd.DataFrame(sb_select("payments","data,item,valor_cents,metodo,patients(nome)",order="data",desc=True,limit=50))
     if not pays.empty:
@@ -314,13 +401,13 @@ with tabs[9]:
         pays["Paciente"]=pays["patients"].apply(lambda x:(x or {}).get("nome","—"))
         st.dataframe(pays[["data","Paciente","item","valor","metodo"]],use_container_width=True,hide_index=True)
 
-# ========== Biblioteca (templates prontos) ==========
+# ========== Biblioteca ==========
 with tabs[10]:
     st.subheader("Biblioteca de Tratamentos (Templates)")
     tpls = sb_select("therapy_templates","id,name,objetivo,roteiro_binaural,frequencias_suporte,cama_preset,phyto_plan,notas",order="name")
     if tpls:
         nomes=[t["name"] for t in tpls]; mapa={t["name"]:t for t in tpls}
-        sel=st.selectbox("Template",nomes)
+        sel=st.selectbox("Template",nomes, key=K("biblioteca","template"))
         t=mapa[sel]
         st.markdown(f"**Objetivo:** {t.get('objetivo','')}")
         st.write("**Frequências de suporte:**", t.get("frequencias_suporte"))
