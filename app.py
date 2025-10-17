@@ -229,7 +229,7 @@ document.getElementById('tone_stop').onclick = stop;
 
 
 # ----------------- UI -----------------
-st.title("🔗LALALA")
+st.title("🔗DOCE CONEXÃO - FREQ/FITO/CAMA")
 
 tabs = st.tabs([
     "Pacientes","Anamnese","Agenda","Sessão (Planner)","Frequências",
