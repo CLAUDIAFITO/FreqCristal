@@ -160,6 +160,62 @@ document.getElementById('bstop').onclick  = stop;
 </script>
 """
 
+def synth_tone_wav(hz: float, seconds: float = 10.0, sr: int = 44100, amp: float = 0.2) -> bytes:
+    """Gera um WAV (estéreo) com tom puro em 'hz' por 'seconds'."""
+    hz = max(1.0, float(hz))
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False)
+    y = np.sin(2 * np.pi * hz * t)
+    ramp = int(sr * 0.02)  # fade 20ms
+    if ramp > 0:
+        y[:ramp] *= np.linspace(0, 1, ramp)
+        y[-ramp:] *= np.linspace(1, 0, ramp)
+    stereo = np.vstack([y, y]).T * float(amp)
+    y16 = np.int16(np.clip(stereo, -1, 1) * 32767)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(sr); wf.writeframes(y16.tobytes())
+    return buf.getvalue()
+
+
+def webaudio_tone_html(hz: float, seconds: int = 20, gain: float = 0.06, wave: str = "sine") -> str:
+    """Player WebAudio de tom puro (um oscilador)."""
+    hz = max(20.0, float(hz))
+    sec = int(max(5, seconds))
+    g = float(gain)
+    wave = (wave or "sine")
+    return f"""
+<div style="padding:.6rem;border:1px solid #eee;border-radius:10px;">
+  <b>Tom puro</b> — {hz:.2f} Hz • {sec}s
+  <div style="margin:.3rem 0;">
+    <button id="tone_play">▶️ Tocar</button>
+    <button id="tone_stop">⏹️ Parar</button>
+  </div>
+  <div style="font-size:.9rem;color:#666">Use fones · volume moderado</div>
+</div>
+<script>
+let ctx=null, osc=null, g=null, timer=null;
+function cleanup(){{ 
+  try{{ if(osc) osc.stop(); }}catch(e){{}}
+  [osc,g].forEach(n=>{{ if(n) try{{ n.disconnect(); }}catch(_e){{}} }});
+  if(ctx){{ try{{ ctx.close(); }}catch(_e){{}} ctx=null; }}
+  if(timer) clearTimeout(timer);
+}}
+function start(){{ 
+  if(ctx) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  osc = ctx.createOscillator(); osc.type = "{wave}"; osc.frequency.value = {hz:.6f};
+  g = ctx.createGain(); g.gain.value = {g:.4f};
+  osc.connect(g).connect(ctx.destination);
+  osc.start();
+  timer = setTimeout(()=>stop(), {sec*1000});
+}}
+function stop(){{ cleanup(); }}
+document.getElementById('tone_play').onclick = start;
+document.getElementById('tone_stop').onclick = stop;
+</script>
+"""
+
+
 # ----------------- UI -----------------
 st.title("🔗 DOCE CONEXÃO")
 
@@ -440,6 +496,58 @@ with tabs[4]:
     df = pd.DataFrame(sb_select("frequencies","code,nome,hz,tipo,chakra,cor,descricao",order="code"))
     if not df.empty:
         st.dataframe(df,use_container_width=True,hide_index=True)
+# --- NOVO: Seletor + Player (mantendo o grid acima) ---
+st.markdown("### 🔊 Ouvir frequência selecionada")
+
+# Monta rótulos a partir do df já exibido
+def _label_row(row):
+    code = str(row.get("code") or "").strip()
+    nome = str(row.get("nome") or "").strip()
+    hz   = row.get("hz")
+    hz_s = f"{float(hz):.2f} Hz" if pd.notnull(hz) else "—"
+    base = code if code else "(sem code)"
+    if nome:
+        base += f" • {nome}"
+    return f"{base} — {hz_s}"
+
+opts = df.apply(_label_row, axis=1).tolist()
+idx_map = {opts[i]: i for i in range(len(opts))}
+
+# UI lado-a-lado: seletor + métricas
+colL, colR = st.columns([2,1])
+sel_label = colL.selectbox("Selecione", opts, key=K("freq","player","sel"))
+row_sel = df.iloc[idx_map[sel_label]]
+hz_sel = float(row_sel.get("hz") or 0.0)
+
+colR.metric("Frequência (Hz)", f"{hz_sel:.2f}")
+colR.metric("Chakra", (row_sel.get("chakra") or "—").title() if isinstance(row_sel.get("chakra"), str) else "—")
+
+# Modo de reprodução
+modo = st.radio("Modo", ["Tom puro", "Binaural (diferença)"], horizontal=True, key=K("freq","player","modo"))
+dur  = st.slider("Duração (s)", 5, 120, 20, 5, key=K("freq","player","dur"))
+
+if modo == "Tom puro":
+    st.components.v1.html(webaudio_tone_html(hz_sel, seconds=dur, gain=0.06, wave="sine"), height=160)
+    wav_tone = synth_tone_wav(hz_sel, seconds=min(dur, 20), sr=44100, amp=0.2)
+    st.audio(wav_tone, format="audio/wav")
+    st.download_button("Baixar WAV (tom puro ~20s)", data=wav_tone,
+                       file_name=f"tone_{hz_sel:.2f}Hz.wav", mime="audio/wav",
+                       key=K("freq","player","dl_tone"))
+else:
+    beat = st.slider("Batida (Hz)", 0.5, 45.0, 10.0, 0.5, key=K("freq","player","beat"))
+    bt = abs(float(beat))
+    fL = max(20.0, float(hz_sel) - bt/2.0)
+    fR = float(hz_sel) + bt/2.0)
+    c1, c2 = st.columns(2)
+    c1.metric("Esquerdo (L)", f"{fL:.2f} Hz")
+    c2.metric("Direito (R)",  f"{fR:.2f} Hz")
+
+    st.components.v1.html(webaudio_binaural_html(hz_sel, beat, seconds=dur, bg_data_url=None, bg_gain=0.12), height=300)
+    wav_bin = synth_binaural_wav(hz_sel, beat, seconds=min(dur, 20), sr=44100, amp=0.2)
+    st.audio(wav_bin, format="audio/wav")
+    st.download_button("Baixar WAV (binaural ~20s)", data=wav_bin,
+                       file_name=f"binaural_{hz_sel:.2f}Hz_{beat:.1f}Hz.wav", mime="audio/wav",
+                       key=K("freq","player","dl_bin"))
 
     with st.expander("Adicionar/editar"):
         with st.form(K("freq","form")):
