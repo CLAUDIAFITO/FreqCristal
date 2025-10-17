@@ -773,4 +773,4 @@ with tabs[10]:
         st.write("**Notas:**", t.get("notas"))
         st.caption("Aplique os itens nas abas específicas para tocar/editar.")
 
-este é meu codigo, na aba frequencias, quero que coloque uma opção de selecionar a frequencia e ouvir 
+
