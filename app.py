@@ -249,34 +249,98 @@ tabs = st.tabs([
 with tabs[0]:
     st.subheader("Pacientes")
     if not sb:
-        st.warning("Configure SUPABASE_URL/KEY.")
+        st.warning("Configure SUPABASE_URL/KEY para habilitar o CRUD de pacientes.")
 
-    with st.form(K("pacientes","form")):
-        c1,c2,c3=st.columns([2,1,1])
-        nome = c1.text_input("Nome", key=K("pacientes","form","nome"))
-        nasc = c2.date_input("Nascimento", value=None, key=K("pacientes","form","nascimento"))
-        tel  = c3.text_input("Telefone", key=K("pacientes","form","telefone"))
-        email= st.text_input("E-mail", key=K("pacientes","form","email"))
-        notas= st.text_area("Notas", key=K("pacientes","form","notas"))
-        if st.form_submit_button("Salvar", use_container_width=True):
-            if sb:
-                sb.table("patients").insert({
-                    "nome":nome or None,
-                    "nascimento":str(nasc) if nasc else None,
-                    "telefone":tel or None,
-                    "email":email or None,
-                    "notas":notas or None
-                }).execute()
-                st.success("Paciente salvo.")
-                st.cache_data.clear()
+    # -------- Cadastrar novo --------
+    with st.form(K("pacientes","form_novo")):
+        c1,c2,c3 = st.columns([2,1,1])
+        nome  = c1.text_input("Nome", key=K("pacientes","novo","nome"))
+        nasc  = c2.date_input("Nascimento", value=None, key=K("pacientes","novo","nascimento"))
+        tel   = c3.text_input("Telefone", key=K("pacientes","novo","telefone"))
+        email = st.text_input("E-mail", key=K("pacientes","novo","email"))
+        notas = st.text_area("Notas", key=K("pacientes","novo","notas"))
+        if st.form_submit_button("💾 Salvar novo paciente", use_container_width=True):
+            if not sb:
+                st.error("Supabase não configurado.")
+            elif not nome.strip():
+                st.error("Informe o nome.")
+            else:
+                try:
+                    sb.table("patients").insert({
+                        "nome": nome.strip(),
+                        "nascimento": str(nasc) if nasc else None,
+                        "telefone": tel or None,
+                        "email": email or None,
+                        "notas": notas or None,
+                    }).execute()
+                    st.success("Paciente salvo.")
+                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"Erro ao salvar: {getattr(e, 'message', e)}")
 
-    pts = sb_select("patients", "*", order="created_at", desc=True, limit=50)
-    if pts:
-        dfp = pd.DataFrame(pts)
-        cols_show = [c for c in ["nome","nascimento","telefone","email","notas","created_at"] if c in dfp.columns]
-        st.dataframe(dfp[cols_show] if cols_show else dfp, use_container_width=True, hide_index=True)
+    # -------- Lista --------
+    cols = "id,nome,nascimento,telefone,email,notas,created_at"
+    pts = sb_select("patients", cols, order="created_at", desc=True, limit=200) if sb else []
+    df_pts = pd.DataFrame(pts)
+
+    if df_pts.empty:
+        st.info("Nenhum paciente cadastrado ainda.")
     else:
-        st.info("Nenhum paciente cadastrado ainda ou sem permissão de leitura (RLS).")
+        st.dataframe(df_pts[["nome","nascimento","telefone","email","notas","created_at"]],
+                     use_container_width=True, hide_index=True)
+
+    # -------- Editar / Excluir --------
+    st.markdown("### Gerenciar paciente")
+    if df_pts.empty:
+        st.caption("Cadastre alguém acima para editar/excluir.")
+    else:
+        nomes = df_pts["nome"].tolist()
+        mapa_id = {row["nome"]: row["id"] for _, row in df_pts.iterrows()}
+        sel = st.selectbox("Selecione o paciente", nomes, key=K("pacientes","edit","sel"))
+
+        row = df_pts[df_pts["id"] == mapa_id[sel]].iloc[0]
+        with st.form(K("pacientes","form_edit")):
+            c1,c2,c3 = st.columns([2,1,1])
+            e_nome  = c1.text_input("Nome", value=row.get("nome",""), key=K("pacientes","edit","nome"))
+            e_nasc  = c2.date_input("Nascimento",
+                                    value=pd.to_datetime(row["nascimento"]).date() if pd.notnull(row.get("nascimento")) else None,
+                                    key=K("pacientes","edit","nasc"))
+            e_tel   = c3.text_input("Telefone", value=row.get("telefone","") or "", key=K("pacientes","edit","tel"))
+            e_email = st.text_input("E-mail", value=row.get("email","") or "", key=K("pacientes","edit","email"))
+            e_notas = st.text_area("Notas", value=row.get("notas","") or "", key=K("pacientes","edit","notas"))
+
+            colU, colD = st.columns(2)
+            upd = colU.form_submit_button("✏️ Atualizar", use_container_width=True)
+            del_ok = colD.checkbox("Confirmar exclusão", key=K("pacientes","edit","confirm_del"))
+            delete = colD.form_submit_button("🗑️ Excluir", use_container_width=True)
+
+        # Ações
+        pid = int(mapa_id[sel])
+        if upd and sb:
+            try:
+                sb.table("patients").update({
+                    "nome": e_nome.strip(),
+                    "nascimento": str(e_nasc) if e_nasc else None,
+                    "telefone": e_tel or None,
+                    "email": e_email or None,
+                    "notas": e_notas or None,
+                }).eq("id", pid).execute()
+                st.success("Paciente atualizado.")
+                st.cache_data.clear()
+            except Exception as e:
+                st.error(f"Erro ao atualizar: {getattr(e, 'message', e)}")
+
+        if delete and sb:
+            if not del_ok:
+                st.warning("Marque 'Confirmar exclusão' para remover.")
+            else:
+                try:
+                    sb.table("patients").delete().eq("id", pid).execute()
+                    st.success("Paciente excluído.")
+                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"Erro ao excluir: {getattr(e, 'message', e)}")
+
 
 # ========== Anamnese (AVANÇADA) ==========
 with tabs[1]:
