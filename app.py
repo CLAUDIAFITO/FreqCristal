@@ -1,4 +1,4 @@
-# app.py — MVP Clínico Holístico (Anamnese avançada + Binaural completo + Editor da Cama)
+# app.py — MVP Clínico Holístico (Anamnese avançada + Binaural + Cama + Fitoterapia + Cristais + Biblioteca + Emoções)
 # Secrets/ENV: SUPABASE_URL, SUPABASE_KEY (anon)
 
 import os, io, json, wave, base64, time, pathlib
@@ -100,7 +100,7 @@ def bytes_to_data_url_safe(raw: bytes, filename: str|None, max_mb: int = MAX_BG_
 
 def webaudio_binaural_html(fc: float, beat: float, seconds: int=60,
                            bg_data_url: str|None=None, bg_gain: float=0.12):
-    """Player binaural + música de fundo estável usando HTMLAudioElement (menos bugs que decodeAudioData)."""
+    """Player binaural + música de fundo usando <audio> (estável)."""
     bt = abs(float(beat))
     fl = max(20.0, float(fc) - bt/2)
     fr = float(fc) + bt/2
@@ -153,7 +153,7 @@ async function start(){{
       bgNode = ctx.createMediaElementSource(bgAudio);
       bgGain = ctx.createGain(); bgGain.gain.value = {g:.4f};
 
-      // Forçar MONO: somar L/R e enviar aos dois canais
+      // Forçar MONO
       const splitter = ctx.createChannelSplitter(2);
       const mergerMono = ctx.createChannelMerger(2);
       const gA = ctx.createGain(); gA.gain.value = 0.5;
@@ -242,7 +242,7 @@ st.title("🔗 DOCE CONEXÃO")
 
 tabs = st.tabs([
     "Pacientes","Anamnese","Agenda","Sessão (Planner)","Frequências",
-    "Binaural","Cama de Cristal","Fitoterapia","Cristais","Financeiro","Biblioteca"
+    "Binaural","Cama de Cristal","Fitoterapia","Cristais","Financeiro","Biblioteca","Emoções"
 ])
 
 # ========== Pacientes ==========
@@ -465,7 +465,6 @@ with tabs[2]:
     ag = sb_select("appointments","id,patient_id,inicio,tipo,notas,patients(nome)",order="inicio",desc=False,limit=100)
     if ag:
         df=pd.DataFrame(ag)
-        # Conversão robusta de timezone
         try:
             df["inicio"] = pd.to_datetime(df["inicio"], utc=True).dt.tz_convert(None)
         except Exception:
@@ -562,7 +561,7 @@ with tabs[4]:
             beat = st.slider("Batida (Hz)", 0.5, 45.0, 10.0, 0.5, key=K("freq","player","beat"))
             bt = abs(float(beat))
             fL = max(20.0, float(hz_sel) - bt/2.0)
-            fR = float(hz_sel) + bt/2.0  # <-- corrigido parêntese
+            fR = float(hz_sel) + bt/2.0  # corrigido
             c1, c2 = st.columns(2)
             c1.metric("Esquerdo (L)", f"{fL:.2f} Hz")
             c2.metric("Direito (R)",  f"{fR:.2f} Hz")
@@ -913,3 +912,153 @@ with tabs[10]:
         st.caption("Aplique os itens nas abas específicas para tocar/editar.")
     else:
         st.info("Sem templates ou sem permissão de leitura (RLS).")
+
+# ========== Emoções ==========
+with tabs[11]:
+    st.subheader("Emoções — mapa e recomendações")
+    cols = "id,emocao,escala,polaridade,frequencias,binaural_beat_hz,carrier_hz,chakras,cores,cristais,afirmacoes,respiracao,notas"
+    df = pd.DataFrame(sb_select("emotions_map", cols, order="escala"))
+    if df.empty:
+        st.info(
+            "A tabela **emotions_map** está vazia. "
+            "Você pode cadastrar abaixo ou importar um CSV com colunas: "
+            "`emocao,escala,polaridade,frequencias(JSON),binaural_beat_hz,carrier_hz,chakras(JSON),cores(JSON),cristais(JSON),afirmacoes(JSON),respiracao,notas`."
+        )
+    else:
+        # Filtros
+        c1,c2,c3 = st.columns([2,1,1])
+        termo = c1.text_input("Busca por emoção", key=K("emo","busca"))
+        pols = sorted([p for p in df["polaridade"].dropna().unique().tolist()])
+        pol  = c2.selectbox("Polaridade", ["(todas)"]+pols, index=0, key=K("emo","pol"))
+        if "escala" in df.columns and df["escala"].notna().any():
+            esc_min = int(df["escala"].min()); esc_max = int(df["escala"].max())
+        else:
+            esc_min, esc_max = 0, 100
+        faixa = c3.slider("Faixa de escala", esc_min, esc_max, (esc_min, esc_max), key=K("emo","faixa"))
+
+        dfv = df.copy()
+        if termo:
+            dfv = dfv[dfv["emocao"].fillna("").str.contains(termo, case=False, na=False)]
+        if pol != "(todas)":
+            dfv = dfv[dfv["polaridade"] == pol]
+        if "escala" in dfv.columns:
+            dfv = dfv[(dfv["escala"].fillna(0)>=faixa[0]) & (dfv["escala"].fillna(0)<=faixa[1])]
+
+        cols_show = [c for c in ["emocao","escala","polaridade","frequencias","binaural_beat_hz","chakras","cristais"] if c in dfv.columns]
+        st.dataframe(dfv[cols_show] if cols_show else dfv, use_container_width=True, hide_index=True)
+
+        # Seleção
+        nomes = dfv["emocao"].dropna().tolist()
+        if nomes:
+            sel = st.selectbox("Selecionar emoção", nomes, key=K("emo","sel"))
+            row = dfv[dfv["emocao"]==sel].iloc[0]
+
+            # Helper para normalizar lista JSON/CSV
+            def as_list(val):
+                if val is None: return []
+                if isinstance(val, list): return val
+                s = str(val).strip()
+                if not s: return []
+                try:
+                    j = json.loads(s)
+                    if isinstance(j, list): return j
+                except Exception:
+                    pass
+                return [x.strip() for x in s.split(",") if x.strip()]
+
+            freqs = as_list(row.get("frequencias"))
+            chakras = as_list(row.get("chakras"))
+            cores   = as_list(row.get("cores"))
+            cristais= as_list(row.get("cristais"))
+            afirms  = as_list(row.get("afirmacoes"))
+
+            st.markdown("### Recomendações")
+            cA,cB,cC = st.columns(3)
+            cA.metric("Escala", f"{int(row.get('escala') or 0)}")
+            cB.metric("Polaridade", row.get("polaridade") or "—")
+            cC.metric("Binaural (beat)", f"{float(row.get('binaural_beat_hz') or 10.0):.1f} Hz")
+
+            if freqs:
+                st.markdown("**Frequências de suporte:** " + ", ".join([f"`{f}`" for f in freqs]))
+            if chakras:
+                st.markdown("**Chakras relacionados:** " + ", ".join(chakras))
+            if cores:
+                st.markdown("**Cores terapêuticas:** " + ", ".join(cores))
+            if cristais:
+                st.markdown("**Cristais:** " + ", ".join(cristais))
+            if afirms:
+                st.markdown("**Afirmações sugeridas:**")
+                st.write("\n".join([f"- {a}" for a in afirms]))
+            if row.get("respiracao"):
+                st.markdown("**Respiração:** " + str(row.get("respiracao")))
+            if row.get("notas"):
+                st.caption(str(row.get("notas")))
+
+            # Tocar imediatamente
+            st.markdown("### Tocar agora")
+            carrier = float(row.get("carrier_hz") or 220.0)
+            beat    = float(row.get("binaural_beat_hz") or 10.0)
+            dur     = st.slider("Duração (s)", 10, 600, 120, key=K("emo","dur"))
+            st.components.v1.html(
+                webaudio_binaural_html(carrier, beat, dur, bg_data_url=None, bg_gain=0.12),
+                height=300
+            )
+            wav = synth_binaural_wav(carrier, beat, seconds=min(dur, 20), sr=44100, amp=0.2)
+            st.audio(wav, format="audio/wav")
+            st.download_button("Baixar WAV (binaural ~20s)", data=wav,
+                               file_name=f"emo_{sel}_carrier{int(carrier)}_beat{beat:.1f}.wav",
+                               mime="audio/wav", key=K("emo","dl"))
+
+            # Se houver lista de Hz de suporte, tocar um tom puro opcional
+            if freqs:
+                st.markdown("### Tom puro (uma frequência de suporte)")
+                hz_opt = st.selectbox("Escolha a frequência", [str(f) for f in freqs], key=K("emo","hzsel"))
+                try:
+                    hz_val = float(hz_opt)
+                    st.components.v1.html(webaudio_tone_html(hz_val, seconds=30, gain=0.06, wave="sine"), height=160)
+                except Exception:
+                    st.caption("Frequência inválida para tom puro.")
+
+    # Cadastrar / Editar emoção
+    with st.expander("Adicionar/editar emoção"):
+        with st.form(K("emo","form")):
+            emocao = st.text_input("Emoção (única)", key=K("emo","nome"))
+            escala = st.number_input("Escala (0-100)", 0, 100, 50, key=K("emo","escala"))
+            polaridade = st.selectbox("Polaridade", ["negativa","neutra","positiva"], index=1, key=K("emo","pol_new"))
+            frequencias = st.text_area("Frequências (JSON ou CSV)", value='[528,639]', key=K("emo","freqs"))
+            binaural = st.number_input("Binaural beat (Hz)", 0.5, 45.0, 10.0, 0.5, key=K("emo","beat"))
+            carrier  = st.number_input("Carrier (Hz)", 50.0, 1000.0, 220.0, 1.0, key=K("emo","carrier"))
+            chakras  = st.text_input("Chakras (CSV)", value="cardiaco", key=K("emo","chakras"))
+            cores    = st.text_input("Cores (CSV)", value="verde", key=K("emo","cores"))
+            cristais = st.text_input("Cristais (CSV)", value="quartzo rosa", key=K("emo","cristais"))
+            afirm    = st.text_area("Afirmações (uma por linha)", value="Eu me acolho\nEu estou segura/seguro", key=K("emo","afirm"))
+            resp     = st.text_area("Respiração (texto)", value="4-7-8 por 3 ciclos", key=K("emo","resp"))
+            notas    = st.text_area("Notas", key=K("emo","notas"))
+            if st.form_submit_button("Salvar emoção", use_container_width=True) and sb:
+                def to_json_list_csv(s):
+                    s = (s or "").strip()
+                    if not s: return []
+                    try:
+                        j = json.loads(s)
+                        if isinstance(j, list): return j
+                    except Exception:
+                        pass
+                    return [x.strip() for x in s.split(",") if x.strip()]
+
+                payload = {
+                    "emocao": emocao.strip() or None,
+                    "escala": int(escala),
+                    "polaridade": polaridade,
+                    "frequencias": to_json_list_csv(frequencias),
+                    "binaural_beat_hz": float(binaural),
+                    "carrier_hz": float(carrier),
+                    "chakras": to_json_list_csv(chakras),
+                    "cores": to_json_list_csv(cores),
+                    "cristais": to_json_list_csv(cristais),
+                    "afirmacoes": [a.strip() for a in (afirm or "").splitlines() if a.strip()],
+                    "respiracao": resp or None,
+                    "notas": notas or None
+                }
+                sb.table("emotions_map").upsert(payload).execute()
+                st.success("Emoção salva/atualizada.")
+                st.cache_data.clear()
