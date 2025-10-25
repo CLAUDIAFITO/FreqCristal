@@ -493,77 +493,98 @@ with tabs[3]:
 # ========== Frequências ==========
 with tabs[4]:
     st.subheader("Catálogo de Frequências")
-    df = pd.DataFrame(sb_select("frequencies","code,nome,hz,tipo,chakra,cor,descricao",order="code"))
-    if not df.empty:
-        st.dataframe(df,use_container_width=True,hide_index=True)
-# --- NOVO: Seletor + Player (mantendo o grid acima) ---
-st.markdown("### 🔊 Ouvir frequência selecionada")
+    df = pd.DataFrame(sb_select("frequencies", "code,nome,hz,tipo,chakra,cor,descricao", order="code"))
+    if df.empty:
+        st.info("Nenhuma frequência cadastrada ainda. Cadastre na aba Admin/DB ou importe o seed.")
+    else:
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
-# Monta rótulos a partir do df já exibido
-def _label_row(row):
-    code = str(row.get("code") or "").strip()
-    nome = str(row.get("nome") or "").strip()
-    hz   = row.get("hz")
-    hz_s = f"{float(hz):.2f} Hz" if pd.notnull(hz) else "—"
-    base = code if code else "(sem code)"
-    if nome:
-        base += f" • {nome}"
-    return f"{base} — {hz_s}"
+        # --- Player dentro da aba ---
+        st.markdown("### 🔊 Ouvir frequência selecionada")
 
-opts = df.apply(_label_row, axis=1).tolist()
-idx_map = {opts[i]: i for i in range(len(opts))}
+        def _label_row(row):
+            code = str(row.get("code") or "").strip()
+            nome = str(row.get("nome") or "").strip()
+            hz   = row.get("hz")
+            hz_s = f"{float(hz):.2f} Hz" if pd.notnull(hz) else "—"
+            base = code if code else "(sem code)"
+            if nome:
+                base += f" • {nome}"
+            return f"{base} — {hz_s}"
 
-# UI lado-a-lado: seletor + métricas
-colL, colR = st.columns([2,1])
-sel_label = colL.selectbox("Selecione", opts, key=K("freq","player","sel"))
-row_sel = df.iloc[idx_map[sel_label]]
-hz_sel = float(row_sel.get("hz") or 0.0)
+        opts = df.apply(_label_row, axis=1).tolist()
+        sel_label = st.selectbox("Selecione", opts, key=K("freq","player","sel"))
+        idx = opts.index(sel_label)
+        row_sel = df.iloc[idx]
+        hz_sel = float(row_sel.get("hz") or 0.0)
 
-colR.metric("Frequência (Hz)", f"{hz_sel:.2f}")
-colR.metric("Chakra", (row_sel.get("chakra") or "—").title() if isinstance(row_sel.get("chakra"), str) else "—")
+        cL, cR = st.columns([2,1])
+        cR.metric("Frequência (Hz)", f"{hz_sel:.2f}")
+        chakra_txt = row_sel.get("chakra")
+        cR.metric("Chakra", (chakra_txt.title() if isinstance(chakra_txt, str) else "—"))
 
-# Modo de reprodução
-modo = st.radio("Modo", ["Tom puro", "Binaural (diferença)"], horizontal=True, key=K("freq","player","modo"))
-dur  = st.slider("Duração (s)", 5, 120, 20, 5, key=K("freq","player","dur"))
+        # Modo de reprodução
+        modo = st.radio("Modo", ["Tom puro", "Binaural (diferença)"], horizontal=True, key=K("freq","player","modo"))
+        dur  = st.slider("Duração (s)", 5, 120, 20, 5, key=K("freq","player","dur"))
 
-if modo == "Tom puro":
-    st.components.v1.html(webaudio_tone_html(hz_sel, seconds=dur, gain=0.06, wave="sine"), height=160)
-    wav_tone = synth_tone_wav(hz_sel, seconds=min(dur, 20), sr=44100, amp=0.2)
-    st.audio(wav_tone, format="audio/wav")
-    st.download_button("Baixar WAV (tom puro ~20s)", data=wav_tone,
-                       file_name=f"tone_{hz_sel:.2f}Hz.wav", mime="audio/wav",
-                       key=K("freq","player","dl_tone"))
-else:
-    beat = st.slider("Batida (Hz)", 0.5, 45.0, 10.0, 0.5, key=K("freq","player","beat"))
-    bt = abs(float(beat))
-    fL = max(20.0, float(hz_sel) - bt/2.0)
-    fR = float(hz_sel) + bt/2.0)
-    c1, c2 = st.columns(2)
-    c1.metric("Esquerdo (L)", f"{fL:.2f} Hz")
-    c2.metric("Direito (R)",  f"{fR:.2f} Hz")
+        if modo == "Tom puro":
+            st.components.v1.html(webaudio_tone_html(hz_sel, seconds=dur, gain=0.06, wave="sine"), height=160)
+            wav_tone = synth_tone_wav(hz_sel, seconds=min(dur, 20), sr=44100, amp=0.2)
+            st.audio(wav_tone, format="audio/wav")
+            st.download_button(
+                "Baixar WAV (tom puro ~20s)",
+                data=wav_tone,
+                file_name=f"tone_{hz_sel:.2f}Hz.wav",
+                mime="audio/wav",
+                key=K("freq","player","dl_tone"),
+            )
+        else:
+            beat = st.slider("Batida (Hz)", 0.5, 45.0, 10.0, 0.5, key=K("freq","player","beat"))
+            bt = abs(float(beat))
+            fL = max(20.0, float(hz_sel) - bt/2.0)
+            fR = float(hz_sel) + bt/2.0  # <- corrigido
 
-    st.components.v1.html(webaudio_binaural_html(hz_sel, beat, seconds=dur, bg_data_url=None, bg_gain=0.12), height=300)
-    wav_bin = synth_binaural_wav(hz_sel, beat, seconds=min(dur, 20), sr=44100, amp=0.2)
-    st.audio(wav_bin, format="audio/wav")
-    st.download_button("Baixar WAV (binaural ~20s)", data=wav_bin,
-                       file_name=f"binaural_{hz_sel:.2f}Hz_{beat:.1f}Hz.wav", mime="audio/wav",
-                       key=K("freq","player","dl_bin"))
+            m1, m2 = st.columns(2)
+            m1.metric("Esquerdo (L)", f"{fL:.2f} Hz")
+            m2.metric("Direito (R)",  f"{fR:.2f} Hz")
 
-    with st.expander("Adicionar/editar"):
-        with st.form(K("freq","form")):
-            code = st.text_input("code (único)", value="SOL528", key=K("freq","code"))
-            nome = st.text_input("nome", value="Solfeggio 528 Hz", key=K("freq","nome"))
-            hz   = st.number_input("hz", 1.0, 2000.0, 528.0, 1.0, key=K("freq","hz"))
-            tipo = st.selectbox("tipo",["solfeggio","chakra","custom"],index=0, key=K("freq","tipo"))
-            chakra = st.selectbox("chakra",["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"],index=0, key=K("freq","chakra"))
-            cor  = st.text_input("cor", key=K("freq","cor"))
-            desc = st.text_area("descrição", key=K("freq","desc"))
-            if st.form_submit_button("Upsert", use_container_width=True) and sb:
-                sb.table("frequencies").upsert({
-                    "code":code,"nome":nome,"hz":hz,"tipo":tipo,
-                    "chakra":(chakra or None),"cor":(cor or None),"descricao":desc
-                }).execute()
-                st.success("Salvo."); st.cache_data.clear()
+            st.components.v1.html(
+                webaudio_binaural_html(hz_sel, beat, seconds=dur, bg_data_url=None, bg_gain=0.12),
+                height=300
+            )
+            wav_bin = synth_binaural_wav(hz_sel, beat, seconds=min(dur, 20), sr=44100, amp=0.2)
+            st.audio(wav_bin, format="audio/wav")
+            st.download_button(
+                "Baixar WAV (binaural ~20s)",
+                data=wav_bin,
+                file_name=f"binaural_{hz_sel:.2f}Hz_{beat:.1f}Hz.wav",
+                mime="audio/wav",
+                key=K("freq","player","dl_bin"),
+            )
+
+        with st.expander("Adicionar/editar cadastro"):
+            with st.form(K("freq","form")):
+                code = st.text_input("code (único)", value=str(row_sel.get("code") or "SOL528"), key=K("freq","code"))
+                nome = st.text_input("nome", value=str(row_sel.get("nome") or "Solfeggio 528 Hz"), key=K("freq","nome"))
+                hz   = st.number_input("hz", 1.0, 2000.0, float(row_sel.get("hz") or 528.0), 1.0, key=K("freq","hz"))
+                tipo = st.selectbox("tipo", ["solfeggio","chakra","custom"], index=0, key=K("freq","tipo"))
+                chakra = st.selectbox("chakra", ["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"],
+                                      index=0, key=K("freq","chakra"))
+                cor  = st.text_input("cor", value=str(row_sel.get("cor") or ""), key=K("freq","cor"))
+                desc = st.text_area("descrição", value=str(row_sel.get("descricao") or ""), key=K("freq","desc"))
+                if st.form_submit_button("Upsert", use_container_width=True) and sb:
+                    sb.table("frequencies").upsert({
+                        "code": code,
+                        "nome": nome,
+                        "hz": hz,
+                        "tipo": tipo,
+                        "chakra": (chakra or None),
+                        "cor": (cor or None),
+                        "descricao": desc
+                    }).execute()
+                    st.success("Salvo.")
+                    st.cache_data.clear()
+
 
 # ========== Binaural ==========
 with tabs[5]:
