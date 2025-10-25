@@ -1,4 +1,4 @@
-# app.py — MVP Clínico Holístico (Anamnese avançada + Binaural completo + Editor da Cama)
+# app.py — MVP Clínico Holístico (Anamnese avançada + Emoções + Binaural completo + Editor da Cama)
 # Secrets/ENV: SUPABASE_URL, SUPABASE_KEY (anon)
 
 import os, io, json, wave, base64, time, pathlib
@@ -22,10 +22,11 @@ except Exception:
 
 st.set_page_config(page_title="Programa Frequencias e Fito", layout="wide")
 
-# Banner de build/arquivo para checagem de deploy
+# Banner + status de conexão
+status = "🟢 Supabase conectado" if sb else "🔴 Supabase desconectado"
 st.markdown(
-    f"🛠️ **BUILD:** {time.strftime('%Y-%m-%d %H:%M:%S')} — "
-    f"**arquivo:** `{pathlib.Path(__file__).resolve()}` — **cwd:** `{os.getcwd()}`"
+    f"🛠️ **BUILD:** {time.strftime('%Y-%m-%d %H:%M:%S')} &nbsp;•&nbsp; "
+    f"**arquivo:** `{pathlib.Path(__file__).resolve()}` &nbsp;•&nbsp; **{status}**"
 )
 
 # ----------------- KEYS ÚNICAS -----------------
@@ -69,7 +70,6 @@ def bytes_to_data_url_safe(raw: bytes, filename: str|None, max_mb: int = MAX_BG_
     mime = "audio/mpeg"
     if name.endswith(".wav"): mime = "audio/wav"
     elif name.endswith(".ogg") or name.endswith(".oga"): mime = "audio/ogg"
-
     if size_mb > max_mb:
         return None, mime, f"Arquivo de {size_mb:.1f} MB excede o limite de {max_mb} MB para tocar embutido. Use arquivo menor ou Storage/URL."
     b64 = base64.b64encode(raw).decode("ascii")
@@ -77,14 +77,13 @@ def bytes_to_data_url_safe(raw: bytes, filename: str|None, max_mb: int = MAX_BG_
 
 def webaudio_binaural_html(fc: float, beat: float, seconds: int=60,
                            bg_data_url: str|None=None, bg_gain: float=0.12):
-    """Player binaural + música de fundo estável usando HTMLAudioElement (menos bugs que decodeAudioData)."""
+    """Player binaural + música de fundo estável via <audio> mono (para não interferir com a batida)."""
     bt = abs(float(beat))
     fl = max(20.0, float(fc) - bt/2)
     fr = float(fc) + bt/2
     sec = int(max(5, seconds))
     bg = json.dumps(bg_data_url) if bg_data_url else "null"
     g  = float(bg_gain)
-
     return f"""
 <div style="padding:.6rem;border:1px solid #eee;border-radius:10px;">
   <b>Binaural</b> — L {fl:.2f} Hz • R {fr:.2f} Hz • {sec}s {'<span style="margin-left:6px;">🎵 fundo</span>' if bg_data_url else ''}<br/>
@@ -94,7 +93,6 @@ def webaudio_binaural_html(fc: float, beat: float, seconds: int=60,
 <script>
 let ctx=null, l=null, r=null, gL=null, gR=null, merger=null, timer=null;
 let bgAudio=null, bgNode=null, bgGain=null;
-
 function cleanup(){{
   try{{ if(l) l.stop(); if(r) r.stop(); }}catch(e){{}}
   [l,r,gL,gR,merger].forEach(n=>{{ if(n) try{{ n.disconnect(); }}catch(_e){{}} }});
@@ -104,12 +102,9 @@ function cleanup(){{
   if(ctx)     {{ try{{ ctx.close(); }}catch(_e){{}} ctx=null; }}
   if(timer) clearTimeout(timer);
 }}
-
 async function start(){{
   if(ctx) return;
   ctx = new (window.AudioContext || window.webkitAudioContext)();
-
-  // --- Binaural (L/R) ---
   l = ctx.createOscillator(); r = ctx.createOscillator();
   l.type='sine'; r.type='sine';
   l.frequency.value={fl:.6f}; r.frequency.value={fr:.6f};
@@ -119,42 +114,27 @@ async function start(){{
   l.connect(gL).connect(merger,0,0); r.connect(gR).connect(merger,0,1);
   merger.connect(ctx.destination);
   l.start(); r.start();
-
-  // --- Música de fundo via <audio> ---
   const bg = {bg};
   if (bg) {{
     try {{
-      bgAudio = new Audio(bg);
-      bgAudio.loop = true;
+      bgAudio = new Audio(bg); bgAudio.loop = true;
       await bgAudio.play().catch(()=>{{ }});
       bgNode = ctx.createMediaElementSource(bgAudio);
       bgGain = ctx.createGain(); bgGain.gain.value = {g:.4f};
-
-      // Forçar MONO: somar L/R e enviar aos dois canais
       const splitter = ctx.createChannelSplitter(2);
       const mergerMono = ctx.createChannelMerger(2);
       const gA = ctx.createGain(); gA.gain.value = 0.5;
       const gB = ctx.createGain(); gB.gain.value = 0.5;
-
       bgNode.connect(splitter);
-      splitter.connect(gA, 0);
-      splitter.connect(gB, 1);
-      gA.connect(mergerMono, 0, 0);
-      gB.connect(mergerMono, 0, 0);
+      splitter.connect(gA, 0); splitter.connect(gB, 1);
+      gA.connect(mergerMono, 0, 0); gB.connect(mergerMono, 0, 0);
       mergerMono.connect(bgGain).connect(ctx.destination);
       try {{ await bgAudio.play(); }} catch(e) {{ console.warn('Fundo não pôde iniciar:', e); }}
-    }} catch(e) {{
-      console.warn('Erro no fundo:', e);
-    }}
+    }} catch(e) {{ console.warn('Erro no fundo:', e); }}
   }}
-
   timer = setTimeout(()=>stop(), {sec*1000});
 }}
-
-function stop(){{
-  cleanup();
-}}
-
+function stop(){{ cleanup(); }}
 document.getElementById('bplay').onclick = start;
 document.getElementById('bstop').onclick  = stop;
 </script>
@@ -176,7 +156,6 @@ def synth_tone_wav(hz: float, seconds: float = 10.0, sr: int = 44100, amp: float
         wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(sr); wf.writeframes(y16.tobytes())
     return buf.getvalue()
 
-
 def webaudio_tone_html(hz: float, seconds: int = 20, gain: float = 0.06, wave: str = "sine") -> str:
     """Player WebAudio de tom puro (um oscilador)."""
     hz = max(20.0, float(hz))
@@ -194,13 +173,13 @@ def webaudio_tone_html(hz: float, seconds: int = 20, gain: float = 0.06, wave: s
 </div>
 <script>
 let ctx=null, osc=null, g=null, timer=null;
-function cleanup(){{ 
+function cleanup(){{
   try{{ if(osc) osc.stop(); }}catch(e){{}}
   [osc,g].forEach(n=>{{ if(n) try{{ n.disconnect(); }}catch(_e){{}} }});
   if(ctx){{ try{{ ctx.close(); }}catch(_e){{}} ctx=null; }}
   if(timer) clearTimeout(timer);
 }}
-function start(){{ 
+function start(){{
   if(ctx) return;
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   osc = ctx.createOscillator(); osc.type = "{wave}"; osc.frequency.value = {hz:.6f};
@@ -215,20 +194,83 @@ document.getElementById('tone_stop').onclick = stop;
 </script>
 """
 
+# --------- Defaults: escala emocional + mapeamentos de apoio ---------
+EMO_SCALE_DEFAULT = [
+    # (nivel, nome, hz)
+    (1,"Vergonha",20),(2,"Culpa",30),(3,"Apatia",50),(4,"Tristeza",75),
+    (5,"Medo",100),(6,"Desejo",125),(7,"Raiva",150),(8,"Orgulho",175),
+    (9,"Coragem",200),(10,"Neutralidade",250),(11,"Disposição",310),
+    (12,"Aceitação",350),(13,"Razão",400),(14,"Amor",500),
+    (15,"Alegria",540),(16,"Paz",600),(17,"Iluminação",700)
+]
+
+CHAKRA_LABEL = {
+    "raiz":"Raiz", "sacral":"Sacral", "plexo":"Plexo Solar", "cardiaco":"Cardíaco",
+    "laringeo":"Laríngeo", "terceiro_olho":"Terceiro Olho", "coronal":"Coronal"
+}
+CHAKRA_CRYSTALS_DEFAULT = {
+    # principais do guia (resumo)- apoio às práticas por chakra
+    "raiz": ["Turmalina Negra","Jaspe Vermelho","Hematita"],          # :contentReference[oaicite:5]{index=5}
+    "sacral": ["Cornalina","Pedra do Sol","Calcita Laranja"],          # :contentReference[oaicite:6]{index=6}
+    "plexo": ["Citrino","Pirita","Olho de Tigre"],                     # :contentReference[oaicite:7]{index=7}
+    "cardiaco": ["Quartzo Rosa","Quartzo Verde/Jade","Malaquita"],     # :contentReference[oaicite:8]{index=8}
+    "laringeo": ["Turquesa","Crisocola","Calcedônia Azul"],            # :contentReference[oaicite:9]{index=9}
+    "terceiro_olho": ["Ametista","Fluorita Roxa","Lepidolita"],        # :contentReference[oaicite:10]{index=10}
+    "coronal": ["Selenita","Howlita","Cristal de Rocha"]               # :contentReference[oaicite:11]{index=11}
+}
+FREQ_SUPORTE_CH = {
+    "raiz": ["SOL396","CHAKRA_RAIZ"],
+    "sacral": ["SOL417","CHAKRA_SACRAL"],
+    "plexo": ["SOL432","SOL417"],
+    "cardiaco": ["SOL528","SOL639","CHAKRA_CARDIACO"],
+    "laringeo": ["SOL741","CHAKRA_LARINGEO"],
+    "terceiro_olho": ["SOL852","CHAKRA_TERCEIRO_OLHO"],
+    "coronal": ["SOL963","CHAKRA_CORONAL"],
+}
+
+def emo_band_reco(hz_scale: float) -> tuple[str, float]:
+    """Mapeia o 'Hz' da escala emocional (conceitual) para uma batida binaural sugerida."""
+    h = float(hz_scale)
+    if h < 100:   return ("Delta/Theta", 3.0)   # estados mais densos → acalmar
+    if h < 200:   return ("Theta/Alpha", 6.0)
+    if h < 400:   return ("Alpha", 10.0)
+    if h < 600:   return ("Alpha/Beta baixa", 12.0)
+    return ("Gamma breve", 40.0)  # usar curto e baixo volume
+
+def emo_chakra_hint(name: str) -> str:
+    n = (name or "").lower()
+    if n in ["vergonha","culpa","apatia","medo"]: return "raiz"
+    if n in ["tristeza"]: return "cardiaco"
+    if n in ["desejo","disposição","neutralidade"]: return "sacral"
+    if n in ["raiva","orgulho","coragem","razão"]: return "plexo"
+    if n in ["amor","alegria","paz"]: return "cardiaco"
+    if n in ["iluminação"]: return "coronal"
+    return "cardiaco"
+
+@st.cache_data(ttl=60)
+def load_emotional_scale_df() -> pd.DataFrame:
+    rows = sb_select("emotional_scale","level,name,hz,band,descricao",order="level") if sb else []
+    if rows:
+        df = pd.DataFrame(rows)
+        df["level"] = pd.to_numeric(df["level"], errors="coerce").fillna(0).astype(int)
+        return df.sort_values("level")
+    # fallback
+    df = pd.DataFrame(EMO_SCALE_DEFAULT, columns=["level","name","hz"])
+    df["band"], df["descricao"] = [None]*len(df), [None]*len(df)
+    return df
 
 # ----------------- UI -----------------
 st.title("🔗 DOCE CONEXÃO")
 
 tabs = st.tabs([
-    "Pacientes","Anamnese","Agenda","Sessão (Planner)","Frequências",
-    "Binaural","Cama de Cristal","Fitoterapia","Cristais","Financeiro","Biblioteca"
+    "Pacientes","Anamnese","Agenda","Sessão (Planner)","Emoções",
+    "Frequências","Binaural","Cama de Cristal","Fitoterapia","Cristais","Financeiro","Biblioteca"
 ])
 
 # ========== Pacientes ==========
 with tabs[0]:
     st.subheader("Pacientes")
     if not sb: st.warning("Configure SUPABASE_URL/KEY.")
-
     with st.form(K("pacientes","form")):
         c1,c2,c3=st.columns([2,1,1])
         nome = c1.text_input("Nome", key=K("pacientes","form","nome"))
@@ -242,34 +284,29 @@ with tabs[0]:
                     "nome":nome,
                     "nascimento":str(nasc) if nasc else None,
                     "telefone":tel,
-                    "email":email
+                    "email":email,
+                    "notas": notas or None
                 }).execute()
                 st.success("Paciente salvo.")
                 st.cache_data.clear()
 
-    pts = sb_select("patients","id,nome,nascimento,telefone,email,created_at",order="created_at",desc=True,limit=50)
+    pts = sb_select("patients","id,nome,nascimento,telefone,email,created_at,notas",order="created_at",desc=True,limit=50)
     if pts:
         st.dataframe(pd.DataFrame(pts),use_container_width=True,hide_index=True)
 
 # ========== Anamnese (AVANÇADA) ==========
 with tabs[1]:
     st.subheader("Anamnese — Avançada")
-
-    # Paciente
     pts = sb_select("patients","id,nome",order="created_at",desc=True)
     mapa = {p["nome"]:p["id"] for p in pts}
     psel = st.selectbox("Paciente", list(mapa.keys()) or ["—"], key=K("anv","paciente"))
 
-    # Carrega perguntas ativas do banco
     qs = sb_select("anamnesis_questions","section,qkey,label,qtype,min_val,max_val,options,weight,required,ord,active",order="section")
     if not qs:
         st.warning("Nenhuma pergunta cadastrada. Execute o SQL de perguntas (anamnesis_questions).")
     else:
-        # agrupar por seção
-        dfq = pd.DataFrame(qs)
-        dfq = dfq[dfq["active"].fillna(True)]
+        dfq = pd.DataFrame(qs); dfq = dfq[dfq["active"].fillna(True)]
         sections = list(dfq["section"].dropna().unique())
-
         with st.form(K("anv","form")):
             tabs_sec = st.tabs(sections)
             respostas = {}
@@ -281,9 +318,8 @@ with tabs[1]:
                         mn = row.get("min_val"); mx = row.get("max_val")
                         opts = row.get("options") or []
                         key = K("anv","q",sec,qk)
-
                         if qt == "likert":
-                            val = st.slider(label, int(mn or 0), int(mx or 10), int((mn or 0 + (mx or 10))//2), key=key)
+                            val = st.slider(label, int(mn or 0), int(mx or 10), int(((mn or 0)+(mx or 10))//2), key=key)
                         elif qt == "bool":
                             val = st.checkbox(label, key=key)
                         elif qt == "multi":
@@ -294,7 +330,6 @@ with tabs[1]:
                             val = st.text_input(label, key=key)
                         respostas[qk] = val
 
-            # ---- cálculo de score (chakras + indicadores/flags) ----
             def score_from_answers(ans: dict) -> dict:
                 chakras = {k:0.0 for k in ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]}
                 flags = set()
@@ -302,12 +337,9 @@ with tabs[1]:
                     qk = row["qkey"]; w = row.get("weight") or {}
                     if qk not in ans: continue
                     val = ans[qk]
-                    # flags
                     if isinstance(w, dict) and "flags" in w:
                         if bool(val):
-                            for fl in (w["flags"] or []):
-                                flags.add(fl)
-                    # chakra weights
+                            for fl in (w["flags"] or []): flags.add(fl)
                     if isinstance(w, dict) and "chakra" in w:
                         for ch, wt in (w["chakra"] or {}).items():
                             try:
@@ -315,8 +347,6 @@ with tabs[1]:
                             except Exception:
                                 v = 0.0
                             chakras[ch] = chakras.get(ch,0.0) + (float(wt) * v)
-
-                # Equilíbrio autoavaliado (0–10) → deficit = (10 - valor)
                 for ch_key, eq_key in [
                     ("raiz","raiz_eq"),("sacral","sacral_eq"),("plexo","plexo_eq"),
                     ("cardiaco","cardiaco_eq"),("laringeo","laringeo_eq"),
@@ -324,7 +354,6 @@ with tabs[1]:
                 ]:
                     if eq_key in respostas and isinstance(respostas[eq_key], (int,float)):
                         chakras[ch_key] += max(0.0, 10.0 - float(respostas[eq_key]))
-
                 idx = {
                     "sono": float(respostas.get("sono_qualidade") or 0),
                     "estresse": float(respostas.get("estresse_nivel") or 0),
@@ -334,14 +363,8 @@ with tabs[1]:
 
             score = score_from_answers(respostas)
 
-            # ---- RESUMO VISUAL (legível) ----
             st.markdown("### 🧭 Resumo clínico")
-            CHAKRA_LABEL = {
-                "raiz":"Raiz", "sacral":"Sacral", "plexo":"Plexo Solar", "cardiaco":"Cardíaco",
-                "laringeo":"Laríngeo", "terceiro_olho":"Terceiro Olho", "coronal":"Coronal"
-            }
             ch_items = sorted(score["chakras"].items(), key=lambda x: x[1], reverse=True)
-
             m1, m2, m3 = st.columns(3)
             m1.metric("Qualidade do sono", f"{int(score['indices'].get('sono',0))}/10")
             m2.metric("Nível de estresse", f"{int(score['indices'].get('estresse',0))}/10")
@@ -360,25 +383,14 @@ with tabs[1]:
             )
             st.dataframe(df_ch, use_container_width=True, hide_index=True)
 
-            # ---- RECOMENDAÇÕES EM TEXTO CLARO ----
             st.markdown("### 📝 Recomendações iniciais")
             if ch_items:
                 top_ch, _val = ch_items[0]
-                mapa_freq = {
-                    "raiz":["SOL396","CHAKRA_RAIZ"],
-                    "sacral":["SOL417","CHAKRA_SACRAL"],
-                    "plexo":["SOL432","SOL417"],
-                    "cardiaco":["SOL528","SOL639","CHAKRA_CARDIACO"],
-                    "laringeo":["SOL741","CHAKRA_LARINGEO"],
-                    "terceiro_olho":["SOL852","CHAKRA_TERCEIRO_OLHO"],
-                    "coronal":["SOL963","CHAKRA_CORONAL"]
-                }
-                sugeridas = mapa_freq.get(top_ch, ["SOL528"])
+                sugeridas = FREQ_SUPORTE_CH.get(top_ch, ["SOL528"])
                 st.markdown(
                     f"- **Frequências de foco** (chakra principal: **{CHAKRA_LABEL.get(top_ch, top_ch).title()}**): "
                     + ", ".join([f"`{c}`" for c in sugeridas])
                 )
-
             sono = float(score["indices"].get("sono",0))
             estresse = float(score["indices"].get("estresse",0))
             ans = float(score["indices"].get("ansiedade",0))
@@ -391,32 +403,11 @@ with tabs[1]:
                     st.markdown("- **Binaural:** **Theta 5–6 Hz** (15–20 min) e finalizar em **Alpha 10 Hz** (5–10 min).")
                 else:
                     st.markdown("- **Binaural:** **Alpha 10 Hz** (10–15 min); opcional **Theta 6 Hz** curto (5–10 min).")
-
             st.markdown("- **Cama de Cristal:** sequência padrão **7×5 min**; dar **ênfase** no chakra principal (+2–3 min).")
-
-            if "gravidez" in score["flags"]:
-                st.markdown("- **Fitoterapia:** revisar contraindicações na gestação; usar apenas ervas **seguras**.")
-            elif "sedativos" in score["flags"]:
-                st.markdown("- **Fitoterapia:** atenção a **interações** com sedativos; preferir doses baixas.")
-            else:
-                st.markdown("- **Fitoterapia:** plano suave (ex.: **Camomila + Cidreira**, 2×/dia por 2–3 semanas).")
-
-            agua = respostas.get("agua"); af = respostas.get("atividade_fisica")
-            hab = []
-            if isinstance(agua,(int,float)) and agua < 6: hab.append("Aumentar ingestão de água (≥ 6 copos/dia).")
-            if isinstance(af,(int,float)) and af < 2:   hab.append("Mover o corpo ao menos 2–3×/semana.")
-            if respostas.get("cafeina",0) and float(respostas.get("cafeina")) > 3:
-                hab.append("Reduzir cafeína após 16h.")
-            if hab:
-                st.markdown("- **Hábitos:** " + " ".join(hab))
-
             st.caption("Observação: recomendações iniciais — ajustar conforme avaliação clínica e resposta do paciente.")
 
-            # ---- Salvar ----
-            if st.form_submit_button("Salvar anamnese", use_container_width=True):
-                payload = {"patient_id": mapa.get(psel),
-                           "respostas": respostas,
-                           "score": score}
+            if st.form_submit_button("Salvar anamnese", use_container_width=True) and sb:
+                payload = {"patient_id": mapa.get(psel), "respostas": respostas, "score": score}
                 sb.table("anamneses").insert(payload).execute()
                 st.success("Anamnese salva com sucesso.")
 
@@ -434,13 +425,9 @@ with tabs[2]:
     if st.button("Agendar", key=K("agenda","btn_agendar")) and sb:
         dt = datetime.combine(start, hora)
         sb.table("appointments").insert({
-            "patient_id": mapa.get(psel),
-            "inicio":dt.isoformat(),
-            "tipo":tipo,
-            "notas":notas
+            "patient_id": mapa.get(psel), "inicio":dt.isoformat(), "tipo":tipo, "notas":notas
         }).execute()
         st.success("Agendado!")
-
     ag = sb_select("appointments","id,patient_id,inicio,tipo,notas,patients(nome)",order="inicio",desc=False,limit=100)
     if ag:
         df=pd.DataFrame(ag)
@@ -454,26 +441,20 @@ with tabs[3]:
     pts = sb_select("patients","id,nome",order="created_at",desc=True)
     mapa = {p["nome"]:p["id"] for p in pts}
     psel = st.selectbox("Paciente", list(mapa.keys()) or ["—"], key=K("planner","paciente"))
-
     st.markdown("**Escolha rapidamente componentes da sessão:**")
     colA,colB,colC,colD = st.columns(4)
-
     freqs = sb_select("frequencies","code,nome,hz,tipo,chakra,cor",order="code")
     opt_freq = [f'{f["code"]} • {f["nome"]}' for f in freqs]
     sel_freq = colA.multiselect("Frequências", opt_freq, key=K("planner","freqs"))
-
     pres = sb_select("binaural_presets","id,nome,carrier_hz,beat_hz,duracao_min",order="nome")
     mapa_pres = {p["nome"]:p for p in pres}
     sel_bina = colB.selectbox("Preset Binaural", list(mapa_pres.keys()) or ["(opcional)"], key=K("planner","binaural"))
-
     camas = sb_select("cama_presets","id,nome,etapas,duracao_min",order="nome")
     mapa_cama = {c["nome"]:c for c in camas}
     sel_cama = colC.selectbox("Preset Cama", list(mapa_cama.keys()) or ["(opcional)"], key=K("planner","cama"))
-
     plans = sb_select("phytotherapy_plans","id,name",order="name")
     mapa_plan = {p["name"]:p for p in plans}
     sel_plan = colD.selectbox("Plano Fitoterápico", list(mapa_plan.keys()) or ["(opcional)"], key=K("planner","fitoplan"))
-
     notas = st.text_area("Notas da sessão", key=K("planner","notas"))
     if st.button("Salvar sessão", key=K("planner","btn_salvar")) and sb:
         prot = {
@@ -490,112 +471,127 @@ with tabs[3]:
         }).execute()
         st.success("Sessão salva!")
 
-# ========== Frequências ==========
+# ========== Emoções ==========
 with tabs[4]:
+    st.subheader("Escala emocional → sugestões de prática")
+    st.caption("Baseado na Escala de Orientação Emocional e em associações de chakras/cristais do guia de pedras. (Esses Hz são **conceituais/vibracionais**, não são tons de áudio.)")
+
+    df_emo = load_emotional_scale_df()
+    if df_emo.empty:
+        st.info("Não há dados. Use fallbacks internos.")
+        df_emo = pd.DataFrame(EMO_SCALE_DEFAULT, columns=["level","name","hz"])
+
+    colL, colR = st.columns([2,1])
+    st.dataframe(df_emo[["level","name","hz"]].rename(columns={"name":"Emoção","hz":"Escala (Hz)"}), use_container_width=True, hide_index=True)
+    sel_emo = colL.selectbox("Emoção atual", df_emo["name"].tolist(), index=max(0, df_emo["level"].tolist().index(9)) if "level" in df_emo else 0, key=K("emo","sel"))
+    row = df_emo[df_emo["name"]==sel_emo].iloc[0]
+    hz_scale = float(row.get("hz") or 0.0)
+    banda, beat_reco = emo_band_reco(hz_scale)
+    chakra = emo_chakra_hint(sel_emo)
+    crystals = CHAKRA_CRYSTALS_DEFAULT.get(chakra, [])
+    freq_sup = FREQ_SUPORTE_CH.get(chakra, [])
+
+    colR.metric("Escala (Hz)", f"{hz_scale:.0f}")
+    colR.metric("Faixa binaural", banda)
+    st.markdown(f"**Chakra sugerido:** {CHAKRA_LABEL.get(chakra,chakra).title()}")
+    st.markdown(f"**Cristais de apoio:** {', '.join(crystals) if crystals else '—'}")
+    st.markdown(f"**Frequências de suporte (catálogo):** {', '.join([f'`{c}`' for c in freq_sup]) or '—'}")
+
+    c1, c2 = st.columns(2)
+    if c1.button("Aplicar no Binaural", key=K("emo","apply_binaural")):
+        st.session_state[K("binaural","carrier")] = 220.0
+        st.session_state[K("binaural","beat")] = float(beat_reco)
+        st.session_state[K("binaural","dur")] = 900  # 15 min
+        st.success(f"Carrier 220 Hz, Batida {beat_reco} Hz, Duração 900 s definidos.")
+    if c2.button("Adicionar frequências ao Planner", key=K("emo","apply_planner")):
+        st.session_state[K("planner","freqs")] = [f"{c} • (auto)" for c in freq_sup]
+        st.success("Frequências adicionadas ao Planner.")
+
+    if sb:
+        with st.expander("Admin (opcional) — carregar escala padrão no Supabase"):
+            if st.button("Carregar/atualizar tabela emotional_scale", key=K("emo","seed")):
+                rows=[{"level":lvl,"name":nm,"hz":hz} for (lvl,nm,hz) in EMO_SCALE_DEFAULT]
+                for r in rows: sb.table("emotional_scale").upsert(r).execute()
+                st.success("Escala emocional padrão carregada/atualizada.")
+                st.cache_data.clear()
+
+# ========== Frequências ==========
+with tabs[5]:
     st.subheader("Catálogo de Frequências")
-    df = pd.DataFrame(sb_select("frequencies", "code,nome,hz,tipo,chakra,cor,descricao", order="code"))
-    if df.empty:
-        st.info("Nenhuma frequência cadastrada ainda. Cadastre na aba Admin/DB ou importe o seed.")
+    df_freq = pd.DataFrame(sb_select("frequencies","code,nome,hz,tipo,chakra,cor,descricao",order="code"))
+    if not df_freq.empty:
+        st.dataframe(df_freq,use_container_width=True,hide_index=True)
     else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.info("Tabela 'frequencies' vazia. Use Admin/seed ou importação.")
 
-        # --- Player dentro da aba ---
-        st.markdown("### 🔊 Ouvir frequência selecionada")
-
+    st.markdown("### 🔊 Ouvir frequência selecionada")
+    if not df_freq.empty:
         def _label_row(row):
             code = str(row.get("code") or "").strip()
             nome = str(row.get("nome") or "").strip()
             hz   = row.get("hz")
             hz_s = f"{float(hz):.2f} Hz" if pd.notnull(hz) else "—"
             base = code if code else "(sem code)"
-            if nome:
-                base += f" • {nome}"
+            if nome: base += f" • {nome}"
             return f"{base} — {hz_s}"
-
-        opts = df.apply(_label_row, axis=1).tolist()
-        sel_label = st.selectbox("Selecione", opts, key=K("freq","player","sel"))
-        idx = opts.index(sel_label)
-        row_sel = df.iloc[idx]
+        opts = df_freq.apply(_label_row, axis=1).tolist()
+        idx_map = {opts[i]: i for i in range(len(opts))}
+        colL, colR = st.columns([2,1])
+        sel_label = colL.selectbox("Selecione", opts, key=K("freq","player","sel"))
+        row_sel = df_freq.iloc[idx_map[sel_label]]
         hz_sel = float(row_sel.get("hz") or 0.0)
+        colR.metric("Frequência (Hz)", f"{hz_sel:.2f}")
+        colR.metric("Chakra", (row_sel.get("chakra") or "—").title() if isinstance(row_sel.get("chakra"), str) else "—")
 
-        cL, cR = st.columns([2,1])
-        cR.metric("Frequência (Hz)", f"{hz_sel:.2f}")
-        chakra_txt = row_sel.get("chakra")
-        cR.metric("Chakra", (chakra_txt.title() if isinstance(chakra_txt, str) else "—"))
-
-        # Modo de reprodução
         modo = st.radio("Modo", ["Tom puro", "Binaural (diferença)"], horizontal=True, key=K("freq","player","modo"))
         dur  = st.slider("Duração (s)", 5, 120, 20, 5, key=K("freq","player","dur"))
-
         if modo == "Tom puro":
             st.components.v1.html(webaudio_tone_html(hz_sel, seconds=dur, gain=0.06, wave="sine"), height=160)
             wav_tone = synth_tone_wav(hz_sel, seconds=min(dur, 20), sr=44100, amp=0.2)
             st.audio(wav_tone, format="audio/wav")
-            st.download_button(
-                "Baixar WAV (tom puro ~20s)",
-                data=wav_tone,
-                file_name=f"tone_{hz_sel:.2f}Hz.wav",
-                mime="audio/wav",
-                key=K("freq","player","dl_tone"),
-            )
+            st.download_button("Baixar WAV (tom puro ~20s)", data=wav_tone,
+                               file_name=f"tone_{hz_sel:.2f}Hz.wav", mime="audio/wav",
+                               key=K("freq","player","dl_tone"))
         else:
             beat = st.slider("Batida (Hz)", 0.5, 45.0, 10.0, 0.5, key=K("freq","player","beat"))
             bt = abs(float(beat))
             fL = max(20.0, float(hz_sel) - bt/2.0)
-            fR = float(hz_sel) + bt/2.0  # <- corrigido
-
-            m1, m2 = st.columns(2)
-            m1.metric("Esquerdo (L)", f"{fL:.2f} Hz")
-            m2.metric("Direito (R)",  f"{fR:.2f} Hz")
-
-            st.components.v1.html(
-                webaudio_binaural_html(hz_sel, beat, seconds=dur, bg_data_url=None, bg_gain=0.12),
-                height=300
-            )
+            fR = float(hz_sel) + bt/2.0
+            c1, c2 = st.columns(2)
+            c1.metric("Esquerdo (L)", f"{fL:.2f} Hz")
+            c2.metric("Direito (R)",  f"{fR:.2f} Hz")
+            st.components.v1.html(webaudio_binaural_html(hz_sel, beat, seconds=dur, bg_data_url=None, bg_gain=0.12), height=300)
             wav_bin = synth_binaural_wav(hz_sel, beat, seconds=min(dur, 20), sr=44100, amp=0.2)
             st.audio(wav_bin, format="audio/wav")
-            st.download_button(
-                "Baixar WAV (binaural ~20s)",
-                data=wav_bin,
-                file_name=f"binaural_{hz_sel:.2f}Hz_{beat:.1f}Hz.wav",
-                mime="audio/wav",
-                key=K("freq","player","dl_bin"),
-            )
+            st.download_button("Baixar WAV (binaural ~20s)", data=wav_bin,
+                               file_name=f"binaural_{hz_sel:.2f}Hz_{beat:.1f}Hz.wav", mime="audio/wav",
+                               key=K("freq","player","dl_bin"))
 
-        with st.expander("Adicionar/editar cadastro"):
-            with st.form(K("freq","form")):
-                code = st.text_input("code (único)", value=str(row_sel.get("code") or "SOL528"), key=K("freq","code"))
-                nome = st.text_input("nome", value=str(row_sel.get("nome") or "Solfeggio 528 Hz"), key=K("freq","nome"))
-                hz   = st.number_input("hz", 1.0, 2000.0, float(row_sel.get("hz") or 528.0), 1.0, key=K("freq","hz"))
-                tipo = st.selectbox("tipo", ["solfeggio","chakra","custom"], index=0, key=K("freq","tipo"))
-                chakra = st.selectbox("chakra", ["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"],
-                                      index=0, key=K("freq","chakra"))
-                cor  = st.text_input("cor", value=str(row_sel.get("cor") or ""), key=K("freq","cor"))
-                desc = st.text_area("descrição", value=str(row_sel.get("descricao") or ""), key=K("freq","desc"))
-                if st.form_submit_button("Upsert", use_container_width=True) and sb:
-                    sb.table("frequencies").upsert({
-                        "code": code,
-                        "nome": nome,
-                        "hz": hz,
-                        "tipo": tipo,
-                        "chakra": (chakra or None),
-                        "cor": (cor or None),
-                        "descricao": desc
-                    }).execute()
-                    st.success("Salvo.")
-                    st.cache_data.clear()
-
+    with st.expander("Adicionar/editar frequência"):
+        with st.form(K("freq","form")):
+            code = st.text_input("code (único)", value="SOL528", key=K("freq","code"))
+            nome = st.text_input("nome", value="Solfeggio 528 Hz", key=K("freq","nome"))
+            hz   = st.number_input("hz", 1.0, 2000.0, 528.0, 1.0, key=K("freq","hz"))
+            tipo = st.selectbox("tipo",["solfeggio","chakra","custom"],index=0, key=K("freq","tipo"))
+            chakra = st.selectbox("chakra",["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"],index=0, key=K("freq","chakra"))
+            cor  = st.text_input("cor", key=K("freq","cor"))
+            desc = st.text_area("descrição", key=K("freq","desc"))
+            if st.form_submit_button("Upsert", use_container_width=True) and sb:
+                sb.table("frequencies").upsert({
+                    "code":code,"nome":nome,"hz":hz,"tipo":tipo,
+                    "chakra":(chakra or None),"cor":(cor or None),"descricao":desc
+                }).execute()
+                st.success("Salvo."); st.cache_data.clear()
 
 # ========== Binaural ==========
-with tabs[5]:
+with tabs[6]:
     st.subheader("Binaural — player rápido")
-
-    # --- atalhos de faixa (inclui Gamma) ---
+    # atalhos de faixa (inclui Gamma)
     band_map = {
         "Delta (1–4 Hz)": 3.0,
         "Theta (4–8 Hz)": 6.0,
         "Alpha (8–12 Hz)": 10.0,
-        "Beta baixa (12–18 Hz)": 15.0,
+        "Beta baixa (12–18 Hz)": 12.0,
         "Gamma (30–45 Hz)": 40.0,
     }
     bcol1, bcol2 = st.columns([2,1])
@@ -604,81 +600,41 @@ with tabs[5]:
         st.session_state[K("binaural","beat")] = float(band_map[faixa])
         st.success(f"Batida ajustada para {band_map[faixa]} Hz")
 
-    # --- presets de tratamento (opcional) ---
+    # preset por emoção (escala)
+    df_emo = load_emotional_scale_df()
+    nomes_emo = df_emo["name"].tolist() if not df_emo.empty else [e[1] for e in EMO_SCALE_DEFAULT]
+    cols_top = st.columns([2,1])
+    preset_emo = cols_top[0].selectbox("Preset por emoção (escala)", nomes_emo, key=K("binaural","preset_emo"))
+    if cols_top[1].button("Aplicar emoção", key=K("binaural","preset_apply_emo")):
+        hz_scale = float(df_emo[df_emo["name"]==preset_emo]["hz"].iloc[0]) if not df_emo.empty else dict((n,h) for _,n,h in EMO_SCALE_DEFAULT)[preset_emo]
+        _, beat_reco = emo_band_reco(hz_scale)
+        st.session_state[K("binaural","carrier")] = 220.0
+        st.session_state[K("binaural","beat")]    = float(beat_reco)
+        st.session_state[K("binaural","dur")]     = 900
+        st.success(f"Emoção '{preset_emo}' aplicada (batida {beat_reco} Hz).")
+
+    # presets de tratamento (opcional) do banco
     pres = sb_select("binaural_presets","id,nome,carrier_hz,beat_hz,duracao_min,notas",order="nome")
     mapa_pres = {p["nome"]:p for p in pres}
-    cols_top = st.columns([2,1])
-    preset_escolhido = cols_top[0].selectbox(
-        "Tratamento pré-definido (binaural_presets)",
-        list(mapa_pres.keys()) or ["(nenhum)"],
-        key=K("binaural","preset_sel")
-    )
-    if cols_top[1].button("Aplicar preset", key=K("binaural","preset_apply")) and preset_escolhido in mapa_pres:
+    preset_escolhido = st.selectbox("Tratamento pré-definido (binaural_presets)", list(mapa_pres.keys()) or ["(nenhum)"], key=K("binaural","preset_sel"))
+    if st.button("Aplicar preset", key=K("binaural","preset_apply")) and preset_escolhido in mapa_pres:
         p = mapa_pres[preset_escolhido]
         st.session_state[K("binaural","carrier")] = float(p.get("carrier_hz") or 220.0)
         st.session_state[K("binaural","beat")]    = float(p.get("beat_hz") or 10.0)
         st.session_state[K("binaural","dur")]     = int((p.get("duracao_min") or 10) * 60)
         st.success(f"Preset aplicado: {preset_escolhido}")
 
-    # --- parâmetros manuais ---
+    # parâmetros manuais
     c1,c2,c3=st.columns(3)
-    carrier = c1.number_input("Carrier (Hz)",50.0,1000.0,
-                              float(st.session_state.get(K("binaural","carrier"),220.0)),
-                              1.0, key=K("binaural","carrier"))
-    beat    = c2.number_input("Batida (Hz)",0.5,45.0,
-                              float(st.session_state.get(K("binaural","beat"),10.0)),
-                              0.5, key=K("binaural","beat"))
-    dur     = int(c3.number_input("Duração (s)",10,3600,
-                                  int(st.session_state.get(K("binaural","dur"),120)),
-                                  5, key=K("binaural","dur")))
-
-    # --- cálculo das frequências L/R e explicação ---
-    bt = abs(float(beat))
-    fL = max(20.0, float(carrier) - bt/2.0)
-    fR = float(carrier) + bt/2.0
-    mL, mR = st.columns(2)
-    mL.metric("Esquerdo (L)", f"{fL:.2f} Hz")
-    mR.metric("Direito (R)",  f"{fR:.2f} Hz")
-    with st.expander("Como funciona?"):
-        st.markdown(
-            """
-**Binaural** = duas frequências **puras** diferentes em cada ouvido → o cérebro percebe a **diferença** como um tom de batida (**beat**).  
-**Cálculo:** `L = carrier − beat/2` e `R = carrier + beat/2`.  
-Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o cérebro tende a sincronizar em **~10 Hz**.
-
-**Faixas úteis (guia rápida):**
-- **Delta** (1–4 Hz): sono profundo, reparo  
-- **Theta** (4–8 Hz): imaginação, introspecção  
-- **Alpha** (8–12 Hz): relaxamento atento, foco calmo  
-- **Beta baixa** (12–18 Hz): atenção/alerta leve (use com cautela)
-- **Gamma** (30–45 Hz): estimulação cognitiva breve (ex.: 40 Hz)
-            """
-        )
-
-    # --- música de fundo (opcional) ---
-    st.markdown("🎵 Música de fundo (opcional)")
-    bg_up   = st.file_uploader("MP3/WAV/OGG (até 12MB)",type=["mp3","wav","ogg"], key=K("binaural","bg_file"))
-    bg_gain = st.slider("Volume do fundo",0.0,0.4,0.12,0.01, key=K("binaural","bg_gain"))
-
-    raw = None; filename = None
-    if bg_up:
-        raw = bg_up.read(); filename = bg_up.name
-        st.audio(raw)  # prévia
-
-    bg_url, _mime, err = bytes_to_data_url_safe(raw, filename) if raw else (None, None, None)
-    if err:
-        st.warning(f"⚠️ {err}")
-
-    st.components.v1.html(
-        webaudio_binaural_html(carrier, beat, dur, bg_url, bg_gain),
-        height=300
-    )
-
+    carrier = c1.number_input("Carrier (Hz)",50.0,1000.0,float(st.session_state.get(K("binaural","carrier"),220.0)),1.0, key=K("binaural","carrier"))
+    beat    = c2.number_input("Batida (Hz)",0.5,45.0,float(st.session_state.get(K("binaural","beat"),10.0)),0.5, key=K("binaural","beat"))
+    dur     = int(c3.number_input("Duração (s)",10,3600,int(st.session_state.get(K("binaural","dur"),120)),5, key=K("binaural","dur")))
+    bt = abs(float(beat)); fL = max(20.0, float(carrier) - bt/2.0); fR = float(carrier) + bt/2.0
+    mL, mR = st.columns(2); mL.metric("Esquerdo (L)", f"{fL:.2f} Hz"); mR.metric("Direito (R)",  f"{fR:.2f} Hz")
+    st.components.v1.html(webaudio_binaural_html(carrier, beat, dur, None, 0.12), height=300)
     wav = synth_binaural_wav(carrier,beat,20,44100,0.2)
     st.audio(wav, format="audio/wav")
-    st.download_button("Baixar WAV (20s)", data=wav,
-                       file_name=f"binaural_{int(carrier)}_{beat:.1f}.wav",
-                       mime="audio/wav", key=K("binaural","dl_wav"))
+    st.download_button("Baixar WAV (20s)", data=wav, file_name=f"binaural_{int(carrier)}_{beat:.1f}.wav", mime="audio/wav", key=K("binaural","dl_wav"))
 
     with st.expander("Sugestões rápidas por objetivo"):
         st.markdown(
@@ -690,24 +646,20 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
 > **Atenção:** epilepsia, marcapasso e outras condições pedem ajustes/evitar binaural.
             """
         )
+    st.caption("Binaural: L = carrier − beat/2 · R = carrier + beat/2 (percebemos internamente a diferença = beat).")
 
 # ========== Cama de Cristal ==========
-with tabs[6]:
+with tabs[7]:
     st.subheader("Cama — presets de 7 luzes")
-
-    # Carrega presets existentes
     camas = sb_select("cama_presets","id,nome,etapas,duracao_min,notas",order="nome")
     nomes = [c["nome"] for c in camas]
     sel = st.selectbox("Preset", nomes or ["—"], key=K("cama","sel"))
-
-    # Utilitários
     CHAKRAS = ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]
     CORES   = ["vermelho","laranja","amarelo","verde","azul","anil","violeta","branco"]
 
     def _df_from_preset(preset):
         try:
-            etapas = preset.get("etapas") or []
-            df = pd.DataFrame(etapas)
+            etapas = preset.get("etapas") or []; df = pd.DataFrame(etapas)
         except Exception:
             df = pd.DataFrame(columns=["ordem","chakra","cor","min"])
         for col in ["ordem","chakra","cor","min"]:
@@ -720,24 +672,16 @@ with tabs[6]:
         df["ordem"] = range(1, len(df)+1)
         return df[["ordem","chakra","cor","min"]]
 
-    # Mostra preset selecionado
-    current_df = pd.DataFrame(columns=["ordem","chakra","cor","min"])
-    preset_dict = None
+    current_df = pd.DataFrame(columns=["ordem","chakra","cor","min"]); preset_dict=None
     if nomes:
         preset_dict = [x for x in camas if x["nome"]==sel][0]
         current_df  = _df_from_preset(preset_dict)
         st.caption(f"Duração total: **{int(current_df['min'].sum())} min** — {preset_dict.get('notas','')}")
 
-    # ===== Editor visual (tabela) =====
     st.markdown("### Editar preset (tabela)")
-
     col_a, col_b = st.columns([2,1])
-    nome_edit = col_a.text_input("Nome do preset",
-                                 value=(preset_dict["nome"] if preset_dict else "Chakras 7x5"),
-                                 key=K("cama","nome"))
-    notas_edit = col_b.text_input("Notas (opcional)",
-                                  value=(preset_dict.get("notas","") if preset_dict else ""),
-                                  key=K("cama","notas"))
+    nome_edit = col_a.text_input("Nome do preset", value=(preset_dict["nome"] if preset_dict else "Chakras 7x5"), key=K("cama","nome"))
+    notas_edit = col_b.text_input("Notas (opcional)", value=(preset_dict.get("notas","") if preset_dict else ""), key=K("cama","notas"))
 
     edited = st.data_editor(
         current_df if not current_df.empty else pd.DataFrame(
@@ -745,9 +689,7 @@ with tabs[6]:
              for i in range(7)]
         ),
         key=K("cama","editor"),
-        use_container_width=True,
-        hide_index=True,
-        num_rows="dynamic",
+        use_container_width=True, hide_index=True, num_rows="dynamic",
         column_config={
             "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1, help="Sequência de aplicação"),
             "chakra": st.column_config.SelectboxColumn("Chakra", options=CHAKRAS, help="Selecione o chakra"),
@@ -755,7 +697,6 @@ with tabs[6]:
             "min": st.column_config.NumberColumn("Minutos", min_value=1, step=1, help="Duração desta etapa")
         }
     )
-
     if not edited.empty:
         edited = edited.copy()
         edited["ordem"] = pd.to_numeric(edited["ordem"], errors="coerce").fillna(0).astype(int)
@@ -767,38 +708,24 @@ with tabs[6]:
     c1, c2, _ = st.columns([1,1,2])
     salvar   = c1.button("💾 Salvar preset", key=K("cama","save"))
     duplicar = c2.button("🧬 Duplicar como…", key=K("cama","dup"))
-
     if (salvar or duplicar) and sb:
-        target_name = nome_edit.strip()
+        target_name = (nome_edit or "").strip()
         if duplicar and preset_dict and target_name == preset_dict["nome"]:
             st.error("Informe um **novo nome** para duplicar.")
         else:
-            etapas_json = []
+            etapas_json=[]
             for _, r in edited.iterrows():
-                ch = (r.get("chakra") or "").strip()
-                cr = (r.get("cor") or "").strip()
-                mn = int(max(1, int(r.get("min") or 1)))
-                if not ch:
-                    continue
-                etapas_json.append({
-                    "ordem": int(r.get("ordem") or 1),
-                    "chakra": ch,
-                    "cor": cr if cr else None,
-                    "min": mn
-                })
-
-            payload = {
-                "nome": target_name,
-                "etapas": etapas_json,
-                "duracao_min": int(sum(e["min"] for e in etapas_json)),
-                "notas": (notas_edit or None)
-            }
+                ch=(r.get("chakra") or "").strip(); cr=(r.get("cor") or "").strip()
+                mn=int(max(1, int(r.get("min") or 1)))
+                if not ch: continue
+                etapas_json.append({"ordem":int(r.get("ordem") or 1),"chakra":ch,"cor":(cr or None),"min":mn})
+            payload = {"nome": target_name, "etapas": etapas_json, "duracao_min": int(sum(e["min"] for e in etapas_json)), "notas": (notas_edit or None)}
             sb.table("cama_presets").upsert(payload).execute()
             st.success(("Duplicado como" if duplicar else "Salvo") + f" **{target_name}**.")
             st.cache_data.clear()
 
 # ========== Fitoterapia ==========
-with tabs[7]:
+with tabs[8]:
     st.subheader("Planos fitoterápicos")
     df = pd.DataFrame(sb_select("phytotherapy_plans","id,name,objetivo,posologia,duracao_sem,cadencia,notas",order="name"))
     if not df.empty:
@@ -807,21 +734,19 @@ with tabs[7]:
         with st.form(K("phyto","form")):
             name = st.text_input("Nome do plano", value="Calma Suave", key=K("phyto","nome"))
             obj  = st.text_area("Objetivo", key=K("phyto","objetivo"))
-            pos  = st.text_area("Posologia (JSON)",
-                                value='[{"erva":"Camomila","forma":"infusão","dose":"200 ml","frequencia":"2x/dia","duracao":"15 dias"}]',
-                                key=K("phyto","posologia"))
+            pos  = st.text_area("Posologia (JSON)", value='[{"erva":"Camomila","forma":"infusão","dose":"200 ml","frequencia":"2x/dia","duracao":"15 dias"}]', key=K("phyto","posologia"))
             durw = st.number_input("Duração (semanas)",1,52,3, key=K("phyto","duracao"))
             cad  = st.text_input("Cadência", value="uso diário", key=K("phyto","cadencia"))
             notas = st.text_area("Notas", key=K("phyto","notas"))
             if st.form_submit_button("Salvar plano", use_container_width=True) and sb:
                 sb.table("phytotherapy_plans").upsert({
                     "name":name,"objetivo":obj,"posologia":json.loads(pos),
-                    "duracao_sem":int(durw),"cadencia":cad,"notas":notas
+                    "duracao_sem":int(durw),"cadencia":cad,"notas":notas or None
                 }).execute()
                 st.success("Plano salvo."); st.cache_data.clear()
 
 # ========== Cristais ==========
-with tabs[8]:
+with tabs[9]:
     st.subheader("Cristais")
     df = pd.DataFrame(sb_select("crystals","id,name,chakra,color,keywords,benefits,pairing_freq,notes",order="name"))
     if not df.empty:
@@ -834,9 +759,7 @@ with tabs[8]:
     with st.expander("Adicionar cristal"):
         with st.form(K("cristais","form")):
             name = st.text_input("Nome", value="Quartzo Rosa", key=K("cristais","nome"))
-            chakra = st.multiselect("Chakras",
-                                    ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"],
-                                    key=K("cristais","chakras"))
+            chakra = st.multiselect("Chakras", ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"], key=K("cristais","chakras"))
             color = st.text_input("Cores (separe por vírgula)", value="rosa", key=K("cristais","cores"))
             kw    = st.text_input("Palavras-chave (vírgula)", value="acolhimento,autoamor", key=K("cristais","keywords"))
             bens  = st.text_area("Benefícios (um por linha)", value="Suaviza emoções\nApoia autocuidado", key=K("cristais","beneficios"))
@@ -855,13 +778,12 @@ with tabs[8]:
                 st.success("Cristal salvo."); st.cache_data.clear()
 
 # ========== Financeiro ==========
-with tabs[9]:
+with tabs[10]:
     st.subheader("Financeiro")
     prices = pd.DataFrame(sb_select("prices","id,item,valor_cents,ativo",order="item"))
     if not prices.empty:
         prices["valor"] = prices["valor_cents"]/100
         st.dataframe(prices[["item","valor","ativo"]],use_container_width=True,hide_index=True)
-
     p_pac = sb_select("patients","id,nome",order="created_at",desc=True)
     mapa = {p["nome"]:p["id"] for p in p_pac}
     with st.form(K("financeiro","form")):
@@ -875,11 +797,8 @@ with tabs[9]:
         obs   = st.text_input("Obs", key=K("fin","obs"))
         if st.form_submit_button("Registrar pagamento", use_container_width=True) and sb:
             sb.table("payments").insert({
-                "patient_id": mapa.get(pac),
-                "item": item,
-                "valor_cents": int(round(valor*100)),
-                "metodo": metodo,
-                "obs": obs
+                "patient_id": mapa.get(pac), "item": item, "valor_cents": int(round(valor*100)),
+                "metodo": metodo, "obs": obs or None
             }).execute()
             st.success("Pagamento lançado.")
     pays = pd.DataFrame(sb_select("payments","data,item,valor_cents,metodo,patients(nome)",order="data",desc=True,limit=50))
@@ -889,7 +808,7 @@ with tabs[9]:
         st.dataframe(pays[["data","Paciente","item","valor","metodo"]],use_container_width=True,hide_index=True)
 
 # ========== Biblioteca ==========
-with tabs[10]:
+with tabs[11]:
     st.subheader("Biblioteca de Tratamentos (Templates)")
     tpls = sb_select("therapy_templates","id,name,objetivo,roteiro_binaural,frequencias_suporte,cama_preset,phyto_plan,notas",order="name")
     if tpls:
@@ -901,5 +820,3 @@ with tabs[10]:
         st.write("**Roteiro binaural:**", t.get("roteiro_binaural"))
         st.write("**Notas:**", t.get("notas"))
         st.caption("Aplique os itens nas abas específicas para tocar/editar.")
-
-
