@@ -1023,7 +1023,7 @@ with tabs[11]:
     with st.expander("Adicionar/editar emoção"):
         with st.form(K("emo","form")):
             emocao = st.text_input("Emoção (única)", key=K("emo","nome"))
-            escala = st.number_input("Escala (0-100)", 0, 100, 50, key=K("emo","escala"))
+            nivel = st.number_input("Escala (0-100)", 0, 100, 50, key=K("emo","escala"))
             polaridade = st.selectbox("Polaridade", ["negativa","neutra","positiva"], index=1, key=K("emo","pol_new"))
             frequencias = st.text_area("Frequências (JSON ou CSV)", value='[528,639]', key=K("emo","freqs"))
             binaural = st.number_input("Binaural beat (Hz)", 0.5, 45.0, 10.0, 0.5, key=K("emo","beat"))
@@ -1047,7 +1047,7 @@ with tabs[11]:
 
                 payload = {
                     "emocao": emocao.strip() or None,
-                    "escala": int(escala),
+                    "nivel": int(escala),
                     "polaridade": polaridade,
                     "frequencias": to_json_list_csv(frequencias),
                     "binaural_beat_hz": float(binaural),
