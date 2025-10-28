@@ -923,42 +923,166 @@ with tabs[7]:
 # ========== Cristais ==========
 with tabs[8]:
     st.subheader("Cristais")
-    df = pd.DataFrame(sb_select("crystals","id,name,chakra,color,keywords,benefits,pairing_freq,notes",order="name"))
-    if not df.empty:
-        st.dataframe(df[["name","chakra","color","keywords"]] if set(["name","chakra","color","keywords"]).issubset(df.columns)
-                     else df, use_container_width=True, hide_index=True)
-        sel_opts = df["name"].dropna().tolist() if "name" in df.columns else []
-        if sel_opts:
-            sel = st.selectbox("Detalhes", sel_opts, key=K("cristais","sel"))
-            row = df[df["name"]==sel].iloc[0]
-            st.write("**Benefícios:**", row.get("benefits"))
-            st.write("**Combinações de frequência:**", row.get("pairing_freq"))
-            st.caption(row.get("notes") or "")
-    else:
-        st.info("Sem cristais cadastrados ou sem permissão de leitura (RLS).")
 
+    def _as_list(x):
+        if isinstance(x, list):
+            return x
+        if x is None or (isinstance(x, str) and not x.strip()):
+            return []
+        return [x]
+
+    # Carrega
+    df = pd.DataFrame(sb_select(
+        "crystals",
+        "id,name,chakra,color,keywords,benefits,pairing_freq,notes",
+        order="name"
+    ))
+
+    if df.empty:
+        st.info("Sem cristais cadastrados ou sem permissão de leitura (RLS).")
+    else:
+        # visão geral
+        base_cols = [c for c in ["name","chakra","color","keywords"] if c in df.columns]
+        st.dataframe(df[base_cols] if base_cols else df, use_container_width=True, hide_index=True)
+
+        # seleção
+        nomes = df["name"].dropna().tolist() if "name" in df.columns else []
+        if nomes:
+            sel = st.selectbox("Editar cristal", nomes, key=K("cristais","sel"))
+            row = df[df["name"]==sel].iloc[0]
+            crystal_id = row.get("id")
+
+            st.markdown("### Detalhes em grid")
+
+            # Grids de listas simples
+            CHAKRAS = ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]
+
+            grid_chak = pd.DataFrame({"chakra": _as_list(row.get("chakra"))})
+            grid_col  = pd.DataFrame({"cor":    _as_list(row.get("color"))})
+            grid_kw   = pd.DataFrame({"palavra":_as_list(row.get("keywords"))})
+            grid_ben  = pd.DataFrame({"beneficio": _as_list(row.get("benefits"))})
+
+            cA, cB = st.columns(2)
+            with cA:
+                st.caption("Chakras")
+                grid_chak = st.data_editor(
+                    grid_chak, num_rows="dynamic", use_container_width=True, hide_index=True,
+                    column_config={"chakra": st.column_config.SelectboxColumn("Chakra", options=CHAKRAS)}
+                )
+                st.caption("Cores")
+                grid_col = st.data_editor(
+                    grid_col, num_rows="dynamic", use_container_width=True, hide_index=True
+                )
+            with cB:
+                st.caption("Palavras-chave")
+                grid_kw = st.data_editor(
+                    grid_kw, num_rows="dynamic", use_container_width=True, hide_index=True
+                )
+                st.caption("Benefícios")
+                grid_ben = st.data_editor(
+                    grid_ben, num_rows="dynamic", use_container_width=True, hide_index=True
+                )
+
+            # Grid para pairing_freq (separa por tipos)
+            p = row.get("pairing_freq") or {}
+            grid_pair_hz  = st.data_editor(
+                pd.DataFrame({"Hz": _as_list(p.get("hz"))}),
+                num_rows="dynamic", use_container_width=True, hide_index=True,
+                column_config={"Hz": st.column_config.NumberColumn("Hz", step=1.0)}
+            )
+            grid_pair_sol = st.data_editor(
+                pd.DataFrame({"Solfeggio": _as_list(p.get("solfeggio"))}),
+                num_rows="dynamic", use_container_width=True, hide_index=True
+            )
+            grid_pair_bin = st.data_editor(
+                pd.DataFrame({"Binaural": _as_list(p.get("binaural"))}),
+                num_rows="dynamic", use_container_width=True, hide_index=True
+            )
+
+            notas = st.text_area("Notas", value=str(row.get("notes") or ""), key=K("cristais","notes"))
+
+            # Monta payload a partir dos grids
+            def _clean_list(df_col, key):
+                if df_col is None or df_col.empty or key not in df_col.columns:
+                    return []
+                vals = [v for v in df_col[key].tolist() if (isinstance(v, str) and v.strip()) or pd.notnull(v)]
+                # normaliza strings
+                vals = [v.strip() if isinstance(v, str) else v for v in vals]
+                return vals
+
+            payload = {
+                "chakra":   _clean_list(grid_chak, "chakra"),
+                "color":    _clean_list(grid_col,  "cor"),
+                "keywords": _clean_list(grid_kw,   "palavra"),
+                "benefits": _clean_list(grid_ben,  "beneficio"),
+                "pairing_freq": {
+                    "hz":        _clean_list(grid_pair_hz,  "Hz"),
+                    "solfeggio": _clean_list(grid_pair_sol, "Solfeggio"),
+                    "binaural":  _clean_list(grid_pair_bin, "Binaural"),
+                },
+                "notes": (notas or None)
+            }
+
+            # Botões
+            c1, c2 = st.columns(2)
+            if c1.button("💾 Salvar alterações", use_container_width=True, key=K("cristais","save")) and sb:
+                try:
+                    q = sb.table("crystals").update(payload)
+                    if pd.notnull(crystal_id):
+                        q = q.eq("id", int(crystal_id))
+                    else:
+                        q = q.eq("name", sel)
+                    q.execute()
+                    st.success("Cristal atualizado.")
+                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"Erro ao salvar: {getattr(e,'message',e)}")
+
+    # ---- Adicionar cristal usando grids (sem JSON livre) ----
     with st.expander("Adicionar cristal"):
-        with st.form(K("cristais","form")):
-            name = st.text_input("Nome", value="Quartzo Rosa", key=K("cristais","nome"))
-            chakra = st.multiselect("Chakras",
-                                    ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"],
-                                    key=K("cristais","chakras"))
-            color = st.text_input("Cores (separe por vírgula)", value="rosa", key=K("cristais","cores"))
-            kw    = st.text_input("Palavras-chave (vírgula)", value="acolhimento,autoamor", key=K("cristais","keywords"))
-            bens  = st.text_area("Benefícios (um por linha)", value="Suaviza emoções\nApoia autocuidado", key=K("cristais","beneficios"))
-            pair  = st.text_area("Pairing (JSON)", value='{"hz":[528,639],"solfeggio":["SOL528","SOL639"],"binaural":["alpha","theta"]}', key=K("cristais","pairing"))
-            notas = st.text_area("Notas", key=K("cristais","notas"))
-            if st.form_submit_button("Salvar cristal", use_container_width=True) and sb:
-                sb.table("crystals").upsert({
-                    "name":name,
-                    "chakra":chakra,
-                    "color":[c.strip() for c in (color or "").split(",") if c.strip()],
-                    "keywords":[k.strip() for k in (kw or "").split(",") if k.strip()],
-                    "benefits":[b.strip() for b in (bens or "").splitlines() if b.strip()],
-                    "pairing_freq": json.loads(pair or "{}"),
-                    "notes": notas or None
-                }).execute()
-                st.success("Cristal salvo."); st.cache_data.clear()
+        with st.form(K("cristais","form_add")):
+            novo_nome = st.text_input("Nome", value="Quartzo Rosa", key=K("cristais","novo","nome"))
+
+            grid_new_chak = st.data_editor(
+                pd.DataFrame({"chakra":[]}), num_rows="dynamic", use_container_width=True, hide_index=True,
+                column_config={"chakra": st.column_config.SelectboxColumn("Chakra", options=["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"])}
+            )
+            grid_new_cor  = st.data_editor(pd.DataFrame({"cor":[]}), num_rows="dynamic", use_container_width=True, hide_index=True)
+            grid_new_kw   = st.data_editor(pd.DataFrame({"palavra":[]}), num_rows="dynamic", use_container_width=True, hide_index=True)
+            grid_new_ben  = st.data_editor(pd.DataFrame({"beneficio":[]}), num_rows="dynamic", use_container_width=True, hide_index=True)
+
+            st.markdown("**Pairing de frequência**")
+            grid_new_hz  = st.data_editor(pd.DataFrame({"Hz":[]}), num_rows="dynamic", use_container_width=True, hide_index=True,
+                                          column_config={"Hz": st.column_config.NumberColumn("Hz", step=1.0)})
+            grid_new_sol = st.data_editor(pd.DataFrame({"Solfeggio":[]}), num_rows="dynamic", use_container_width=True, hide_index=True)
+            grid_new_bin = st.data_editor(pd.DataFrame({"Binaural":[]}), num_rows="dynamic", use_container_width=True, hide_index=True)
+
+            new_notas = st.text_area("Notas", key=K("cristais","novo","notas"))
+
+            if st.form_submit_button("➕ Salvar novo cristal", use_container_width=True) and sb:
+                try:
+                    def _pick(df_, col):
+                        return [x for x in (df_[col].tolist() if (df_ is not None and col in df_.columns) else [])
+                                if (isinstance(x,str) and x.strip()) or pd.notnull(x)]
+
+                    sb.table("crystals").upsert({
+                        "name": (novo_nome or "").strip(),
+                        "chakra":   _pick(grid_new_chak, "chakra"),
+                        "color":    _pick(grid_new_cor,  "cor"),
+                        "keywords": _pick(grid_new_kw,   "palavra"),
+                        "benefits": _pick(grid_new_ben,  "beneficio"),
+                        "pairing_freq": {
+                            "hz": _pick(grid_new_hz, "Hz"),
+                            "solfeggio": _pick(grid_new_sol, "Solfeggio"),
+                            "binaural":  _pick(grid_new_bin, "Binaural"),
+                        },
+                        "notes": (new_notas or None)
+                    }).execute()
+                    st.success("Cristal criado.")
+                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"Erro ao criar: {getattr(e,'message',e)}")
+
 
 # ========== Financeiro ==========
 with tabs[9]:
@@ -1003,18 +1127,217 @@ with tabs[9]:
 # ========== Biblioteca ==========
 with tabs[10]:
     st.subheader("Biblioteca de Tratamentos (Templates)")
-    tpls = sb_select("therapy_templates","id,name,objetivo,roteiro_binaural,frequencias_suporte,cama_preset,phyto_plan,notas",order="name")
-    if tpls:
-        nomes=[t["name"] for t in tpls]; mapa={t["name"]:t for t in tpls}
-        sel=st.selectbox("Template",nomes, key=K("biblioteca","template"))
-        t=mapa[sel]
-        st.markdown(f"**Objetivo:** {t.get('objetivo','')}")
-        st.write("**Frequências de suporte:**", t.get("frequencias_suporte"))
-        st.write("**Roteiro binaural:**", t.get("roteiro_binaural"))
-        st.write("**Notas:**", t.get("notas"))
-        st.caption("Aplique os itens nas abas específicas para tocar/editar.")
-    else:
+
+    tpls = sb_select(
+        "therapy_templates",
+        "id,name,objetivo,roteiro_binaural,frequencias_suporte,cama_preset,phyto_plan,notas",
+        order="name"
+    )
+
+    if not tpls:
         st.info("Sem templates ou sem permissão de leitura (RLS).")
+    else:
+        nomes = [t["name"] for t in tpls]
+        mapa  = {t["name"]: t for t in tpls}
+
+        sel = st.selectbox("Template", nomes, key=K("biblioteca","template"))
+        t   = mapa[sel]
+        template_id = t.get("id")
+
+        st.text_input("Objetivo", value=str(t.get("objetivo","")), key=K("biblioteca","objetivo"), disabled=True)
+        st.caption("Edite os componentes abaixo em grid (as alterações serão salvas no template).")
+
+        # --------- Frequências de suporte (grid) ---------
+        st.markdown("### Frequências de suporte (grid)")
+        def _norm_freqs(fs):
+            rows = []
+            fs = fs or []
+            for x in fs:
+                if isinstance(x, dict):
+                    rows.append({
+                        "code":   x.get("code")   or x.get("codigo") or "",
+                        "nome":   x.get("nome")   or "",
+                        "hz":     x.get("hz"),
+                        "tipo":   x.get("tipo")   or "",
+                        "chakra": x.get("chakra") or "",
+                    })
+                else:
+                    rows.append({"code": str(x), "nome":"", "hz": None, "tipo":"", "chakra":""})
+            if not rows:
+                rows = [{"code":"","nome":"", "hz":None, "tipo":"", "chakra":""}]
+            dfX = pd.DataFrame(rows, columns=["code","nome","hz","tipo","chakra"])
+            return dfX
+
+        df_freqs = _norm_freqs(t.get("frequencias_suporte"))
+        df_freqs = st.data_editor(
+            df_freqs, num_rows="dynamic", use_container_width=True, hide_index=True,
+            column_config={
+                "hz": st.column_config.NumberColumn("Hz", step=1.0),
+                "chakra": st.column_config.SelectboxColumn("Chakra",
+                           options=["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]),
+            }
+        )
+
+        # --------- Roteiro binaural (grid) ---------
+        st.markdown("### Roteiro binaural (grid)")
+        def _norm_rb(rb):
+            rb = rb or []
+            rows = []
+            for i, x in enumerate(rb, start=1):
+                if isinstance(x, dict):
+                    rows.append({
+                        "ordem": x.get("ordem", i),
+                        "carrier_hz": x.get("carrier_hz"),
+                        "beat_hz": x.get("beat_hz"),
+                        "dur_min": x.get("dur_min") or x.get("duracao") or x.get("duracao_min"),
+                        "obs": x.get("obs") or x.get("notas") or "",
+                    })
+                else:
+                    rows.append({"ordem": i, "carrier_hz": 220.0, "beat_hz": 10.0, "dur_min": 10, "obs": ""})
+            if not rows:
+                rows = [{"ordem":1,"carrier_hz":220.0,"beat_hz":10.0,"dur_min":10,"obs":""}]
+            dfX = pd.DataFrame(rows, columns=["ordem","carrier_hz","beat_hz","dur_min","obs"])
+            dfX["ordem"] = pd.to_numeric(dfX["ordem"], errors="coerce").fillna(0).astype(int)
+            dfX = dfX.sort_values("ordem").reset_index(drop=True)
+            dfX["ordem"] = range(1, len(dfX)+1)
+            return dfX
+
+        df_rb = _norm_rb(t.get("roteiro_binaural"))
+        df_rb = st.data_editor(
+            df_rb, num_rows="dynamic", use_container_width=True, hide_index=True,
+            column_config={
+                "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
+                "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", step=1.0),
+                "beat_hz": st.column_config.NumberColumn("Beat (Hz)", step=0.5),
+                "dur_min": st.column_config.NumberColumn("Duração (min)", step=1),
+                "obs": st.column_config.TextColumn("Observações"),
+            }
+        )
+
+        # --------- Cama preset (grid) ---------
+        st.markdown("### Cama — etapas (grid)")
+        def _norm_cama(cp):
+            # cp pode ser: string (nome do preset), dict {"etapas":[...]}, ou lista de etapas
+            etapas = []
+            if isinstance(cp, str) and cp.strip():
+                # tenta buscar preset pelo nome
+                base = sb_select("cama_presets", "nome,etapas", order="nome")
+                cand = [x for x in (base or []) if (x.get("nome") or "").strip() == cp.strip()]
+                if cand:
+                    etapas = cand[0].get("etapas") or []
+            elif isinstance(cp, dict):
+                etapas = cp.get("etapas") or []
+            elif isinstance(cp, list):
+                etapas = cp
+            rows = []
+            for i, x in enumerate(etapas, start=1):
+                if isinstance(x, dict):
+                    rows.append({
+                        "ordem": x.get("ordem", i),
+                        "chakra": (x.get("chakra") or ""),
+                        "cor": (x.get("cor") or ""),
+                        "min": int(x.get("min") or 5),
+                    })
+                else:
+                    rows.append({"ordem": i, "chakra":"", "cor":"", "min":5})
+            if not rows:
+                rows = [{"ordem":i, "chakra":v, "cor":"", "min":5} for i, v in enumerate(
+                    ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"], start=1)]
+            dfX = pd.DataFrame(rows, columns=["ordem","chakra","cor","min"])
+            dfX["ordem"] = pd.to_numeric(dfX["ordem"], errors="coerce").fillna(0).astype(int)
+            dfX = dfX.sort_values("ordem").reset_index(drop=True)
+            dfX["ordem"] = range(1, len(dfX)+1)
+            return dfX
+
+        df_cama = _norm_cama(t.get("cama_preset"))
+        df_cama = st.data_editor(
+            df_cama, num_rows="dynamic", use_container_width=True, hide_index=True,
+            column_config={
+                "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
+                "chakra": st.column_config.SelectboxColumn("Chakra",
+                           options=["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]),
+                "cor": st.column_config.TextColumn("Cor"),
+                "min": st.column_config.NumberColumn("Minutos", min_value=1, step=1),
+            }
+        )
+        st.caption(f"Duração total prevista: **{int(pd.to_numeric(df_cama['min'], errors='coerce').fillna(0).sum())} min**")
+
+        # Notas
+        notas = st.text_area("Notas do template", value=str(t.get("notas") or ""), key=K("biblioteca","notas"))
+
+        # --------- Salvar ---------
+        def _pack_freqs(dfX):
+            out = []
+            if dfX is None or dfX.empty:
+                return out
+            for _, r in dfX.iterrows():
+                code = (str(r.get("code") or "").strip())
+                nome = (str(r.get("nome") or "").strip())
+                hz   = r.get("hz"); hz = float(hz) if pd.notnull(hz) else None
+                tipo = (str(r.get("tipo") or "").strip())
+                chakra = (str(r.get("chakra") or "").strip())
+                if not code and hz is None and not nome and not tipo and not chakra:
+                    continue
+                out.append({"code": code or None, "nome": nome or None, "hz": hz, "tipo": tipo or None, "chakra": chakra or None})
+            return out
+
+        def _pack_rb(dfX):
+            out = []
+            if dfX is None or dfX.empty:
+                return out
+            for _, r in dfX.iterrows():
+                try:
+                    ordem = int(r.get("ordem") or 0)
+                except Exception:
+                    ordem = 0
+                carrier = r.get("carrier_hz"); carrier = float(carrier) if pd.notnull(carrier) else None
+                beat    = r.get("beat_hz");    beat    = float(beat)    if pd.notnull(beat)    else None
+                dur     = r.get("dur_min");    dur     = int(dur)       if pd.notnull(dur)     else None
+                obs     = str(r.get("obs") or "").strip() or None
+                if not carrier and not beat and not dur and not obs:
+                    continue
+                out.append({"ordem": ordem or len(out)+1, "carrier_hz": carrier, "beat_hz": beat, "dur_min": dur, "obs": obs})
+            out.sort(key=lambda x: x.get("ordem") or 0)
+            for i, x in enumerate(out, start=1): x["ordem"] = i
+            return out
+
+        def _pack_cama(dfX):
+            out = []
+            if dfX is None or dfX.empty:
+                return out
+            for _, r in dfX.iterrows():
+                ch = str(r.get("chakra") or "").strip()
+                cr = str(r.get("cor") or "").strip() or None
+                try:
+                    mn = int(r.get("min") or 0)
+                except Exception:
+                    mn = 0
+                if not ch and not cr and mn <= 0:
+                    continue
+                out.append({"ordem": int(r.get("ordem") or len(out)+1), "chakra": ch, "cor": cr, "min": max(1, mn or 1)})
+            out.sort(key=lambda x: x.get("ordem") or 0)
+            for i, x in enumerate(out, start=1): x["ordem"] = i
+            return {"etapas": out}
+
+        c1, c2 = st.columns(2)
+        if c1.button("💾 Salvar alterações do template", use_container_width=True, key=K("biblioteca","save")) and sb:
+            try:
+                payload = {
+                    "frequencias_suporte": _pack_freqs(df_freqs),
+                    "roteiro_binaural": _pack_rb(df_rb),
+                    "cama_preset": _pack_cama(df_cama),
+                    "notas": (notas or None),
+                }
+                q = sb.table("therapy_templates").update(payload)
+                if pd.notnull(template_id):
+                    q = q.eq("id", int(template_id))
+                else:
+                    q = q.eq("name", sel)
+                q.execute()
+                st.success("Template atualizado.")
+                st.cache_data.clear()
+            except Exception as e:
+                st.error(f"Erro ao salvar: {getattr(e, 'message', e)}")
 
 # ========== Emoções ==========
 with tabs[11]:
