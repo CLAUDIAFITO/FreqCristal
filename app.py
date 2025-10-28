@@ -271,7 +271,7 @@ with tabs[0]:
                         "nascimento": str(nasc) if nasc else None,
                         "telefone": tel or None,
                         "email": email or None,
-                        # se a coluna 'notas' não existir, o upsert ignora esta chave
+                        # se a coluna 'notas' não existir, o banco ignora
                         "notas": (notas or None)
                     }).execute()
                     st.success("Paciente salvo.")
@@ -292,14 +292,29 @@ with tabs[0]:
 
     # -------- Editar / Excluir --------
     st.markdown("### Gerenciar paciente")
-    if df_pts.empty or not {"id","nome"}.issubset(df_pts.columns):
-        st.caption("Cadastre alguém acima para editar/excluir. (A tabela precisa ter pelo menos colunas 'id' e 'nome').")
+    if df_pts.empty or "nome" not in df_pts.columns:
+        st.caption("Cadastre alguém acima para editar/excluir. (A tabela precisa ter pelo menos 'nome'; ideal ter 'id').")
     else:
-        nomes = df_pts["nome"].astype(str).tolist()
-        mapa_id = {str(row["nome"]): int(row["id"]) for _, row in df_pts.iterrows()}
-        sel = st.selectbox("Selecione o paciente", nomes, key=K("pacientes","edit","sel"))
+        # monta opções "Nome · #id" quando houver id; evita int() e lida com nulos
+        opts = []
+        for _, r in df_pts.iterrows():
+            nm = str(r.get("nome") or "—")
+            rid = r.get("id")
+            label = f"{nm} · #{rid}" if pd.notnull(rid) else nm
+            opts.append((label, rid, nm))
+        labels = [o[0] for o in opts]
+        sel_label = st.selectbox("Selecione o paciente", labels, key=K("pacientes","edit","sel"))
 
-        row = df_pts[df_pts["id"] == mapa_id[sel]].iloc[0]
+        # recupera id e nome selecionados
+        sel_tuple = next((o for o in opts if o[0] == sel_label), None)
+        sel_id = sel_tuple[1] if sel_tuple else None
+        sel_nome = sel_tuple[2] if sel_tuple else None
+
+        # escolhe a linha pela chave disponível (prioriza id)
+        if sel_id is not None and "id" in df_pts.columns:
+            row = df_pts[df_pts["id"] == sel_id].iloc[0]
+        else:
+            row = df_pts[df_pts["nome"] == sel_nome].iloc[0]
 
         def _parse_date_safe(v):
             try:
@@ -317,7 +332,6 @@ with tabs[0]:
                                     key=K("pacientes","edit","nasc"))
             e_tel   = c3.text_input("Telefone", value=str(row.get("telefone") or ""), key=K("pacientes","edit","tel"))
             e_email = st.text_input("E-mail", value=str(row.get("email") or ""), key=K("pacientes","edit","email"))
-            # só mostra o campo Notas se a coluna existir
             if "notas" in df_pts.columns:
                 e_notas = st.text_area("Notas", value=str(row.get("notas") or ""), key=K("pacientes","edit","notas"))
             else:
@@ -329,7 +343,7 @@ with tabs[0]:
             del_ok = colD.checkbox("Confirmar exclusão", key=K("pacientes","edit","confirm_del"))
             delete = colD.form_submit_button("🗑️ Excluir", use_container_width=True)
 
-        pid = int(mapa_id[sel])
+        # UPDATE/DELETE só se tivermos 'id'
         if upd and sb:
             payload = {
                 "nome": (e_nome or "").strip(),
@@ -339,10 +353,14 @@ with tabs[0]:
             }
             if "notas" in df_pts.columns:
                 payload["notas"] = (e_notas or None)
+
             try:
-                sb.table("patients").update(payload).eq("id", pid).execute()
-                st.success("Paciente atualizado.")
-                st.cache_data.clear()
+                if sel_id is None or "id" not in df_pts.columns:
+                    st.warning("Não é possível atualizar sem coluna 'id' na tabela. Crie a coluna para habilitar UPDATE.")
+                else:
+                    sb.table("patients").update(payload).eq("id", sel_id).execute()
+                    st.success("Paciente atualizado.")
+                    st.cache_data.clear()
             except Exception as e:
                 st.error(f"Erro ao atualizar: {getattr(e, 'message', e)}")
 
@@ -351,11 +369,15 @@ with tabs[0]:
                 st.warning("Marque 'Confirmar exclusão' para remover.")
             else:
                 try:
-                    sb.table("patients").delete().eq("id", pid).execute()
-                    st.success("Paciente excluído.")
-                    st.cache_data.clear()
+                    if sel_id is None or "id" not in df_pts.columns:
+                        st.warning("Não é possível excluir sem coluna 'id' na tabela.")
+                    else:
+                        sb.table("patients").delete().eq("id", sel_id).execute()
+                        st.success("Paciente excluído.")
+                        st.cache_data.clear()
                 except Exception as e:
                     st.error(f"Erro ao excluir: {getattr(e, 'message', e)}")
+
 
 
 
