@@ -262,69 +262,85 @@ with tabs[0]:
         if st.form_submit_button("💾 Salvar novo paciente", use_container_width=True):
             if not sb:
                 st.error("Supabase não configurado.")
-            elif not nome.strip():
+            elif not (nome or "").strip():
                 st.error("Informe o nome.")
             else:
                 try:
                     sb.table("patients").insert({
-                        "nome": nome.strip(),
+                        "nome": (nome or "").strip(),
                         "nascimento": str(nasc) if nasc else None,
                         "telefone": tel or None,
                         "email": email or None,
-                        "notas": notas or None,
+                        # se a coluna 'notas' não existir, o upsert ignora esta chave
+                        "notas": (notas or None)
                     }).execute()
                     st.success("Paciente salvo.")
                     st.cache_data.clear()
                 except Exception as e:
                     st.error(f"Erro ao salvar: {getattr(e, 'message', e)}")
 
-    # -------- Lista --------
-    cols = "id,nome,nascimento,telefone,email,notas,created_at"
-    pts = sb_select("patients", cols, order="created_at", desc=True, limit=200) if sb else []
+    # -------- Lista (robusta às colunas que existirem) --------
+    wanted_cols = ["id","nome","nascimento","telefone","email","notas","created_at"]
+    pts = sb_select("patients", ",".join(wanted_cols), order="created_at", desc=True, limit=200) if sb else []
     df_pts = pd.DataFrame(pts)
 
     if df_pts.empty:
         st.info("Nenhum paciente cadastrado ainda.")
     else:
-        st.dataframe(df_pts[["nome","nascimento","telefone","email","notas","created_at"]],
-                     use_container_width=True, hide_index=True)
+        show_cols = [c for c in ["nome","nascimento","telefone","email","notas","created_at"] if c in df_pts.columns]
+        st.dataframe(df_pts[show_cols] if show_cols else df_pts, use_container_width=True, hide_index=True)
 
     # -------- Editar / Excluir --------
     st.markdown("### Gerenciar paciente")
-    if df_pts.empty:
-        st.caption("Cadastre alguém acima para editar/excluir.")
+    if df_pts.empty or not {"id","nome"}.issubset(df_pts.columns):
+        st.caption("Cadastre alguém acima para editar/excluir. (A tabela precisa ter pelo menos colunas 'id' e 'nome').")
     else:
-        nomes = df_pts["nome"].tolist()
-        mapa_id = {row["nome"]: row["id"] for _, row in df_pts.iterrows()}
+        nomes = df_pts["nome"].astype(str).tolist()
+        mapa_id = {str(row["nome"]): int(row["id"]) for _, row in df_pts.iterrows()}
         sel = st.selectbox("Selecione o paciente", nomes, key=K("pacientes","edit","sel"))
 
         row = df_pts[df_pts["id"] == mapa_id[sel]].iloc[0]
+
+        def _parse_date_safe(v):
+            try:
+                if v is None or (isinstance(v, float) and np.isnan(v)) or (isinstance(v, str) and not v.strip()):
+                    return None
+                return pd.to_datetime(v).date()
+            except Exception:
+                return None
+
         with st.form(K("pacientes","form_edit")):
             c1,c2,c3 = st.columns([2,1,1])
-            e_nome  = c1.text_input("Nome", value=row.get("nome",""), key=K("pacientes","edit","nome"))
+            e_nome  = c1.text_input("Nome", value=str(row.get("nome","")), key=K("pacientes","edit","nome"))
             e_nasc  = c2.date_input("Nascimento",
-                                    value=pd.to_datetime(row["nascimento"]).date() if pd.notnull(row.get("nascimento")) else None,
+                                    value=_parse_date_safe(row.get("nascimento")),
                                     key=K("pacientes","edit","nasc"))
-            e_tel   = c3.text_input("Telefone", value=row.get("telefone","") or "", key=K("pacientes","edit","tel"))
-            e_email = st.text_input("E-mail", value=row.get("email","") or "", key=K("pacientes","edit","email"))
-            e_notas = st.text_area("Notas", value=row.get("notas","") or "", key=K("pacientes","edit","notas"))
+            e_tel   = c3.text_input("Telefone", value=str(row.get("telefone") or ""), key=K("pacientes","edit","tel"))
+            e_email = st.text_input("E-mail", value=str(row.get("email") or ""), key=K("pacientes","edit","email"))
+            # só mostra o campo Notas se a coluna existir
+            if "notas" in df_pts.columns:
+                e_notas = st.text_area("Notas", value=str(row.get("notas") or ""), key=K("pacientes","edit","notas"))
+            else:
+                e_notas = None
+                st.caption("Coluna **notas** não existe na tabela — exibindo sem notas.")
 
             colU, colD = st.columns(2)
             upd = colU.form_submit_button("✏️ Atualizar", use_container_width=True)
             del_ok = colD.checkbox("Confirmar exclusão", key=K("pacientes","edit","confirm_del"))
             delete = colD.form_submit_button("🗑️ Excluir", use_container_width=True)
 
-        # Ações
         pid = int(mapa_id[sel])
         if upd and sb:
+            payload = {
+                "nome": (e_nome or "").strip(),
+                "nascimento": str(e_nasc) if e_nasc else None,
+                "telefone": e_tel or None,
+                "email": e_email or None
+            }
+            if "notas" in df_pts.columns:
+                payload["notas"] = (e_notas or None)
             try:
-                sb.table("patients").update({
-                    "nome": e_nome.strip(),
-                    "nascimento": str(e_nasc) if e_nasc else None,
-                    "telefone": e_tel or None,
-                    "email": e_email or None,
-                    "notas": e_notas or None,
-                }).eq("id", pid).execute()
+                sb.table("patients").update(payload).eq("id", pid).execute()
                 st.success("Paciente atualizado.")
                 st.cache_data.clear()
             except Exception as e:
@@ -340,6 +356,7 @@ with tabs[0]:
                     st.cache_data.clear()
                 except Exception as e:
                     st.error(f"Erro ao excluir: {getattr(e, 'message', e)}")
+
 
 
 # ========== Anamnese (AVANÇADA) ==========
