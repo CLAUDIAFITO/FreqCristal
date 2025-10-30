@@ -1,6 +1,6 @@
 # app.py — MVP Clínico Holístico (Anamnese avançada + Binaural + Cama + Fitoterapia + Cristais + Biblioteca + Emoções)
 # Secrets/ENV: SUPABASE_URL, SUPABASE_KEY (anon)
-
+fffff
 import os, io, json, wave, base64, time, pathlib
 from datetime import datetime, date
 from typing import Optional
