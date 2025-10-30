@@ -619,6 +619,218 @@ with tabs[3]:
             "tipo":"Misto","protocolo":prot,"status":"rascunho"
         }).execute()
         st.success("Sessão salva!")
+    # ------------------------------------------
+    # SESSÕES SALVAS (usar/aplicar/rodar)
+    # ------------------------------------------
+    st.markdown("### 💾 Sessões salvas do paciente")
+
+    def _load_sessions_for_patient(pid: int):
+        if not sb or not pid:
+            return []
+        try:
+            # preferencial: filtra no backend
+            q = sb.table("sessions").select(
+                "id,patient_id,data,tipo,protocolo,status,patients(nome)"
+            ).eq("patient_id", pid).order("data", desc=True).limit(50)
+            return q.execute().data or []
+        except Exception:
+            # fallback: pega tudo e filtra aqui
+            rows = sb_select("sessions", "id,patient_id,data,tipo,protocolo,status,patients(nome)",
+                             order="data", desc=True, limit=200)
+            return [r for r in (rows or []) if r.get("patient_id") == pid]
+
+    # Mapeia labels das frequências para poder pré-selecionar no Planner
+    code_to_label = {}
+    try:
+        for f in (freqs or []):
+            lbl = f'{f["code"]} • {f.get("nome","")}'
+            code_to_label[str(f.get("code"))] = lbl
+    except Exception:
+        pass
+
+    pid_sel = mapa.get(psel)
+    sess_rows = _load_sessions_for_patient(pid_sel) if pid_sel else []
+
+    if not sess_rows:
+        st.info("Nenhuma sessão para este paciente (ou sem permissão de leitura).")
+    else:
+        import pandas as _pd
+
+        def _proto_summary(p: dict):
+            if not isinstance(p, dict): return ("—", "—", "—", 0)
+            # Frequências
+            fqs = p.get("frequencias") or []
+            nfreq = len(fqs)
+            # Binaural
+            bname = (p.get("binaural") or {}).get("nome") or "—"
+            # Cama
+            cname = (p.get("cama") or {}).get("nome") \
+                    or ("preset" if isinstance(p.get("cama"), dict) else "—")
+            # Fitoterapia
+            pname = (p.get("fitoterapia_plan") or {}).get("name") or "—"
+            return (bname, cname, pname, nfreq)
+
+        table = []
+        for r in sess_rows:
+            b, c, p, nfreq = _proto_summary(r.get("protocolo") or {})
+            data_str = r.get("data") or ""
+            try:
+                data_str = str(_pd.to_datetime(data_str))
+            except Exception:
+                pass
+            table.append({
+                "Quando": data_str,
+                "Tipo": r.get("tipo") or "—",
+                "Status": r.get("status") or "—",
+                "Binaural": b,
+                "Cama": c,
+                "Plano Fito": p,
+                "Frequências (#)": nfreq,
+                "ID": r.get("id")
+            })
+
+        df_sess = _pd.DataFrame(table)
+        st.dataframe(
+            df_sess[["Quando","Tipo","Status","Binaural","Cama","Plano Fito","Frequências (#)"]],
+            use_container_width=True, hide_index=True
+        )
+
+        st.markdown("#### Ações por sessão")
+        for r in sess_rows:
+            sid  = r.get("id")
+            prot = r.get("protocolo") or {}
+            with st.expander(f"🧭 Sessão #{sid} — {r.get('tipo','Misto')}  ·  {r.get('status','rascunho')}"):
+                # --- EXECUTAR AGORA ---
+                st.markdown("**▶️ Executar agora**")
+
+                # Binaural (player embutido)
+                b = prot.get("binaural") or {}
+                try:
+                    carrier = float(b.get("carrier_hz") or 220.0)
+                    beat    = float(b.get("beat_hz") or 10.0)
+                    dur_s   = int((b.get("duracao_min") or 10) * 60)
+                    st.caption(f"Binaural: {b.get('nome','(preset)')} • carrier {carrier:.1f} Hz • beat {beat:.1f} Hz • {dur_s}s")
+                    st.components.v1.html(webaudio_binaural_html(carrier, beat, seconds=min(dur_s, 300)), height=300)
+                except Exception:
+                    st.caption("Binaural: —")
+
+                # Frequências (escolha rápida + player)
+                fqs = prot.get("frequencias") or []
+                codes = [ (fx.get("code") if isinstance(fx, dict) else str(fx)) for fx in fqs ]
+                if codes:
+                    opt = [ code_to_label.get(str(c), str(c)) for c in codes ]
+                    sel_fx = st.selectbox("Tocar frequência do protocolo", opt, key=K("sess","fx",sid))
+                    # extrai Hz se existir no catálogo carregado
+                    try:
+                        # acha no catálogo local df_f (aba Frequências). Se não existir, tenta pelos dados de suporte
+                        hz_sel = None
+                        code_sel = str(sel_fx).split(" • ")[0]
+                        if 'df_f' in globals() and isinstance(df_f, _pd.DataFrame):
+                            rowf = df_f[df_f["code"]==code_sel]
+                            if not rowf.empty:
+                                hz_sel = float(rowf.iloc[0].get("hz") or 0.0)
+                        if hz_sel:
+                            st.components.v1.html(webaudio_tone_html(hz_sel, seconds=20), height=160)
+                        else:
+                            st.caption("Frequência sem Hz no catálogo local — abra a aba **Frequências** para ouvir.")
+                    except Exception:
+                        pass
+                else:
+                    st.caption("Frequências: —")
+
+                # Cama (grade)
+                cama = prot.get("cama") or {}
+                etapas = (cama.get("etapas") if isinstance(cama, dict) else []) or []
+                if etapas:
+                    _dfc = _pd.DataFrame(etapas, columns=["ordem","chakra","cor","min"]).copy()
+                    _dfc["ordem"] = _pd.to_numeric(_dfc["ordem"], errors="coerce").fillna(0).astype(int)
+                    _dfc = _dfc.sort_values("ordem").reset_index(drop=True)
+                    _dfc["ordem"] = range(1, len(_dfc)+1)
+                    st.caption(f"Cama: {cama.get('nome','(personalizada)')} • duração: {_dfc['min'].fillna(0).sum():.0f} min")
+                    st.dataframe(_dfc, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("Cama: —")
+
+                # Plano fito (resumo)
+                fito = prot.get("fitoterapia_plan") or {}
+                if fito:
+                    st.caption(f"Plano fito: {fito.get('name','—')}")
+                notas = prot.get("notas") or ""
+                if notas:
+                    st.markdown(f"**Notas:** {notas}")
+
+                st.download_button("⬇️ Exportar protocolo (JSON)",
+                                   data=json.dumps(prot, ensure_ascii=False, indent=2),
+                                   file_name=f"protocolo_sessao_{sid}.json",
+                                   mime="application/json",
+                                   key=K("sess","export",sid))
+
+                st.markdown("---")
+
+                # --- APLICAR NO PLANNER ---
+                if st.button("📋 Aplicar no Planner (pré-preencher)", key=K("sess","apply",sid)):
+                    try:
+                        # Frequências -> multiselect do Planner
+                        labels = [code_to_label.get(str(c.get("code") if isinstance(c, dict) else c),
+                                                    str(c.get("code") if isinstance(c, dict) else c))
+                                  for c in (prot.get("frequencias") or [])]
+                        st.session_state[K("planner","freqs")] = [l for l in labels if l]
+
+                        # Binaural preset / Cama preset / Plano fito (por nome)
+                        bname = (prot.get("binaural") or {}).get("nome")
+                        cname = (prot.get("cama") or {}).get("nome")
+                        pname = (prot.get("fitoterapia_plan") or {}).get("name")
+
+                        if bname and bname in mapa_pres: st.session_state[K("planner","binaural")] = bname
+                        if cname and cname in mapa_cama: st.session_state[K("planner","cama")]     = cname
+                        if pname and pname in mapa_plan: st.session_state[K("planner","fitoplan")] = pname
+
+                        st.session_state[K("planner","notas")] = prot.get("notas","")
+
+                        st.success("Protocolo aplicado ao Planner. (Abra/continue no topo desta aba.)")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Falha ao aplicar: {e}")
+
+                colF, colD, colX = st.columns(3)
+                # --- FINALIZAR ---
+                if colF.button("✅ Finalizar sessão", key=K("sess","close",sid)) and sb:
+                    try:
+                        sb.table("sessions").update({"status":"finalizada"}).eq("id", sid).execute()
+                        st.success("Sessão finalizada.")
+                        st.cache_data.clear(); st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao finalizar: {getattr(e,'message',e)}")
+
+                # --- DUPLICAR ---
+                if colD.button("🧬 Duplicar como rascunho", key=K("sess","dup",sid)) and sb:
+                    try:
+                        sb.table("sessions").insert({
+                            "patient_id": r.get("patient_id"),
+                            "data": datetime.utcnow().isoformat(),
+                            "tipo": r.get("tipo") or "Misto",
+                            "protocolo": prot,
+                            "status": "rascunho"
+                        }).execute()
+                        st.success("Sessão duplicada.")
+                        st.cache_data.clear(); st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao duplicar: {getattr(e,'message',e)}")
+
+                # --- EXCLUIR ---
+                del_ok = colX.checkbox("Confirmar excluir", key=K("sess","confirmdel",sid))
+                if colX.button("🗑️ Excluir sessão", key=K("sess","del",sid)) and sb:
+                    if not del_ok:
+                        st.warning("Marque 'Confirmar excluir' antes.")
+                    else:
+                        try:
+                            sb.table("sessions").delete().eq("id", sid).execute()
+                            st.success("Sessão excluída.")
+                            st.cache_data.clear(); st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao excluir: {getattr(e,'message',e)}")
+
+
 
 # ========== Frequências ==========
 with tabs[4]:
