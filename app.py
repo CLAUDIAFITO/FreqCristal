@@ -1667,7 +1667,7 @@ with tabs[11]:
 
 # ========== Emoções ==========
 with tabs[12]:
-    st.subheader("Emoções — mapa e recomendações")
+    st.subheader("Emoções — teste")
 
     if not sb:
         st.warning("Configure SUPABASE_URL/KEY para carregar o mapa emocional.")
