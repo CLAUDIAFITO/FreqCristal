@@ -1667,114 +1667,309 @@ with tabs[11]:
 
 # ========== Emoções ==========
 with tabs[12]:
-    st.subheader("Emoções — teste")
 
-    if not sb:
-        st.warning("Configure SUPABASE_URL/KEY para carregar o mapa emocional.")
-    else:
-        # busca colunas reais do schema (sem 'escala' e sem 'id')
-        cols = "emocao,nivel,hz_ref,polaridade,frequencias,binaural_beat_hz,carrier_hz,chakras,cores,cristais,afirmacoes,respiracao,notas"
+    st.subheader("🗂️ Sessões salvas")
+
+   # if not sb:
+      #  st.warning("Configure SUPABASE_URL/KEY para habilitar a leitura das sessões.")
+       # st.stop()
+
+    # ---- Dados base (pacientes, frequências, presets) ----
+    pts = sb_select("patients", "id,nome", order="created_at", desc=True, limit=1000)
+    mapa_pid_nome = {}
+    try:
+        for p in pts or []:
+            pid = p.get("id")
+            if pid is not None and str(pid).strip() != "":
+                mapa_pid_nome[int(pid)] = str(p.get("nome") or "—")
+    except Exception:
+        pass
+
+    freqs = sb_select("frequencies", "code,nome,hz,tipo,chakra,cor", order="code", desc=False, limit=2000)
+    freq_by_code = {str(f.get("code") or "").strip(): f for f in (freqs or [])}
+    # labels usados no Planner (ex.: "SOL528 • Solfeggio 528 Hz")
+    def _freq_label(f):
+        code = str(f.get("code") or "").strip()
+        nome = str(f.get("nome") or "").strip()
+        return f"{code} • {nome}" if nome else code
+    planner_labels_by_code = {c: _freq_label(f) for c, f in freq_by_code.items()}
+
+    pres_bina = sb_select("binaural_presets", "id,nome,carrier_hz,beat_hz,duracao_min", order="nome")
+    pres_bina_by_name = {str(p.get("nome") or "").strip(): p for p in (pres_bina or [])}
+
+    pres_cama = sb_select("cama_presets", "id,nome,etapas,duracao_min,notas", order="nome")
+    pres_cama_by_name = {str(c.get("nome") or "").strip(): c for c in (pres_cama or [])}
+
+    plans_phyto = sb_select("phytotherapy_plans", "id,name", order="name")
+    plan_by_name = {str(p.get("name") or "").strip(): p for p in (plans_phyto or [])}
+
+    # ---- Carrega sessões ----
+    # Tenta com campos explícitos; se a RLS/colunas falhar, sb_select cai para '*'
+    rows = sb_select("sessions", "id,patient_id,data,tipo,status,protocolo,patients(nome)", order="data", desc=True, limit=400)
+    df = pd.DataFrame(rows)
+
+    if df.empty:
+        st.info("Nenhuma sessão encontrada ainda.")
+        st.stop()
+
+    # Normalizações de colunas
+    if "data" in df.columns:
         try:
-            rows = sb.table("emotions_map").select(cols).order("nivel", desc=False).execute().data
-        except Exception as e:
-            st.error(f"[emotions_map] erro: {getattr(e, 'message', e)}")
-            rows = []
+            # Mostra em horário local (sem tz) quando possível
+            df["data"] = pd.to_datetime(df["data"], errors="coerce").dt.tz_convert(None)
+        except Exception:
+            df["data"] = pd.to_datetime(df["data"], errors="coerce")
 
-        df = pd.DataFrame(rows)
-        if df.empty:
-            st.info(
-                "A tabela `emotions_map` está vazia ou sem permissão de leitura.\n"
-                "Colunas esperadas: emocao, nivel, hz_ref, polaridade, frequencias(JSON), "
-                "binaural_beat_hz, carrier_hz, chakras(JSON), cores(JSON), cristais(JSON), "
-                "afirmacoes(JSON), respiracao, notas."
-            )
+    # Nome do paciente (usa relacionamento ou mapeamento local)
+    def _nome_paciente(r):
+        # se veio o join: patients = {"nome": "..."}
+        pjoin = r.get("patients")
+        if isinstance(pjoin, dict) and "nome" in pjoin:
+            return pjoin.get("nome") or "—"
+        # senão tenta pelo patient_id
+        pid = r.get("patient_id")
+        try:
+            if pd.notnull(pid):
+                return mapa_pid_nome.get(int(pid), "—")
+        except Exception:
+            pass
+        return "—"
+
+    if "Paciente" not in df.columns:
+        df["Paciente"] = df.apply(lambda r: _nome_paciente(r), axis=1)
+
+    # ---- Filtros ----
+    c1, c2, c3, c4 = st.columns([2,2,2,2])
+    pac_opts = ["(todos)"] + sorted([p for p in df["Paciente"].dropna().unique().tolist() if p and p != "—"])
+    f_pac = c1.selectbox("Paciente", pac_opts, index=0, key=K("sessoes", "f", "pac"))
+
+    status_opts = ["(todos)"] + sorted([s for s in df.get("status", pd.Series([], dtype=str)).dropna().astype(str).unique().tolist() if s])
+    f_sta = c2.selectbox("Status", status_opts, index=0, key=K("sessoes", "f", "status"))
+
+    min_d, max_d = None, None
+    if "data" in df.columns and not df["data"].dropna().empty:
+        dser = pd.to_datetime(df["data"], errors="coerce").dropna()
+        if not dser.empty:
+            min_d = dser.min().date()
+            max_d = dser.max().date()
+    f_de = c3.date_input("De", value=min_d if min_d else date.today(), key=K("sessoes","f","de"))
+    f_ate = c4.date_input("Até", value=max_d if max_d else date.today(), key=K("sessoes","f","ate"))
+
+    dff = df.copy()
+    if f_pac != "(todos)":
+        dff = dff[dff["Paciente"] == f_pac]
+    if f_sta != "(todos)" and "status" in dff.columns:
+        dff = dff[dff["status"].astype(str) == f_sta]
+    if "data" in dff.columns and (f_de or f_ate):
+        dser = pd.to_datetime(dff["data"], errors="coerce")
+        if f_de:
+            dff = dff[dser.dt.date >= f_de]
+        if f_ate:
+            dff = dff[dser.dt.date <= f_ate]
+
+    # ---- Lista em grid ----
+    show_cols = [c for c in ["data","Paciente","tipo","status"] if c in dff.columns]
+    st.dataframe(dff[show_cols] if show_cols else dff, use_container_width=True, hide_index=True)
+
+    # ---- Seleção de uma sessão para ações ----
+    # rótulo amigável: "#id · yyyy-mm-dd HH:MM · Paciente"
+    def _lab(r):
+        sid = r.get("id")
+        dtv = r.get("data")
+        try:
+            dtv = pd.to_datetime(dtv, errors="coerce")
+            dts = dtv.strftime("%Y-%m-%d %H:%M") if pd.notnull(dtv) else "—"
+        except Exception:
+            dts = str(dtv)
+        return f"#{sid} · {dts} · {r.get('Paciente','—')}"
+
+    opts = [(_lab(r), r.get("id")) for _, r in dff.iterrows() if pd.notnull(r.get("id"))]
+    if not opts:
+        st.stop()
+    labels = [o[0] for o in opts]
+    lab2id = {o[0]: o[1] for o in opts}
+    sel_lab = st.selectbox("Selecionar sessão", labels, key=K("sessoes","sel"))
+    sel_id = lab2id.get(sel_lab)
+
+    row = df[df["id"] == sel_id].iloc[0] if sel_id in df.get("id", []) .values else None
+    if row is None:
+        st.warning("Não foi possível localizar os dados desta sessão.")
+        st.stop()
+
+    # ---- Detalhes do protocolo ----
+    st.markdown("### 📋 Protocolo")
+    prot = row.get("protocolo") or {}
+
+    # Frequências
+    freq_list = []
+    for item in (prot.get("frequencias") or []):
+        code = ""
+        if isinstance(item, dict):
+            code = str(item.get("code") or "").strip()
         else:
-            # cria uma coluna 'escala' amigável (usa nivel; se não houver, cai pra hz_ref)
-            if "nivel" in df.columns:
-                df["escala"] = df["nivel"]
-            elif "hz_ref" in df.columns:
-                df["escala"] = df["hz_ref"]
-            else:
-                df["escala"] = None
-
-            # helpers para “embelezar” colunas json/list
-            def fmt_list_or_dict(x):
-                if isinstance(x, list):
-                    return ", ".join(map(str, x))
-                if isinstance(x, dict):
-                    # tenta deixar compacto: solfeggio/hz principais
-                    s = []
-                    if "solfeggio" in x and isinstance(x["solfeggio"], list):
-                        s.append("Solfeggio: " + ", ".join(map(str, x["solfeggio"])))
-                    if "hz" in x and isinstance(x["hz"], list):
-                        s.append("Hz: " + ", ".join(map(lambda v: f"{v}", x["hz"])))
-                    return " | ".join(s) if s else json.dumps(x, ensure_ascii=False)
-                return x
-
-            show = pd.DataFrame({
-                "Emoção": df["emocao"],
-                "Escala": df["escala"],
-                "Polaridade": df["polaridade"].str.title(),
-                "Frequências": df["frequencias"].apply(fmt_list_or_dict),
-                "Beat (Hz)": df["binaural_beat_hz"],
-                "Carrier (Hz)": df["carrier_hz"],
-                "Chakras": df["chakras"].apply(fmt_list_or_dict),
-                "Cores": df["cores"].apply(fmt_list_or_dict),
-                "Cristais": df["cristais"].apply(fmt_list_or_dict),
-                "Afirmações": df["afirmacoes"].apply(fmt_list_or_dict),
-                "Respiração": df["respiracao"],
-                "Notas": df["notas"],
+            code = str(item or "").strip()
+        f = freq_by_code.get(code)
+        if f:
+            freq_list.append({
+                "code": code,
+                "nome": f.get("nome"),
+                "hz": f.get("hz"),
+                "tipo": f.get("tipo"),
+                "chakra": f.get("chakra"),
             })
+        else:
+            if code:
+                freq_list.append({"code": code, "nome": None, "hz": None, "tipo": None, "chakra": None})
+    df_freq = pd.DataFrame(freq_list)
+    if not df_freq.empty:
+        st.caption("Frequências de suporte")
+        st.dataframe(df_freq, use_container_width=True, hide_index=True)
+    else:
+        st.caption("Sem frequências cadastradas neste protocolo.")
 
-            st.dataframe(show, use_container_width=True, hide_index=True)
+    # Binaural
+    st.caption("Binaural")
+    b = prot.get("binaural") or {}
+    colB1, colB2, colB3 = st.columns(3)
+    try:
+        colB1.metric("Carrier (Hz)", f"{float(b.get('carrier_hz') or 220.0):.2f}")
+        colB2.metric("Beat (Hz)", f"{float(b.get('beat_hz') or 10.0):.2f}")
+        dur_min = int(b.get("duracao_min") or b.get("dur_min") or 10)
+        colB3.metric("Duração (min)", f"{dur_min}")
+    except Exception:
+        colB1.metric("Carrier (Hz)", "—")
+        colB2.metric("Beat (Hz)", "—")
+        colB3.metric("Duração (min)", "—")
 
-            # UI de aplicação rápida: escolher emoção e tocar/gerar recomendações
-            st.markdown("### Aplicar e tocar rapidamente")
-            c1, c2, c3 = st.columns([2,1,1])
-            emo = c1.selectbox("Escolha a emoção", df["emocao"].tolist(), key=K("emo","sel"))
-            dur = c2.number_input("Duração (s)", 10, 1800, 120, 5, key=K("emo","dur"))
-            vol = c3.slider("Volume (binaural)", 0.0, 0.4, 0.12, 0.01, key=K("emo","vol"))
+    # Cama
+    st.caption("Cama — etapas")
+    cama = prot.get("cama") or {}
+    etapas = []
+    if isinstance(cama, dict):
+        # pode ser {"nome": "...", "etapas":[...]} ou direto {"etapas":[...]}
+        etapas = cama.get("etapas") or []
+    elif isinstance(cama, list):
+        etapas = cama
+    df_cama = pd.DataFrame(etapas) if etapas else pd.DataFrame(columns=["ordem","chakra","cor","min"])
+    if not df_cama.empty:
+        # normaliza e ordena
+        for col in ["ordem","chakra","cor","min"]:
+            if col not in df_cama.columns:
+                df_cama[col] = None
+        df_cama["ordem"] = pd.to_numeric(df_cama["ordem"], errors="coerce")
+        df_cama = df_cama.sort_values("ordem", na_position="last").reset_index(drop=True)
+        df_cama["ordem"] = range(1, len(df_cama)+1)
+        st.dataframe(df_cama[["ordem","chakra","cor","min"]], use_container_width=True, hide_index=True)
+        try:
+            st.caption(f"🕒 Duração total prevista: **{int(pd.to_numeric(df_cama['min'], errors='coerce').fillna(0).sum())} min**")
+        except Exception:
+            pass
+    else:
+        st.caption("Sem etapas de cama neste protocolo.")
 
-            row = df[df["emocao"] == emo].iloc[0]
-            # extrai bate-estaca seguro
-            beat = float(row.get("binaural_beat_hz") or 10.0)
-            carrier = float(row.get("carrier_hz") or 220.0)
+    # Fitoterapia
+    st.caption("Fitoterapia (plano associado)")
+    phyto = prot.get("fitoterapia_plan") or {}
+    if phyto:
+        st.write({k: phyto.get(k) for k in ["id","name","objetivo","cadencia","duracao_sem"] if k in phyto})
+    else:
+        st.write("—")
 
-            # info lateral
-            mL, mR, m3 = st.columns(3)
-            mL.metric("Beat (Hz)", f"{beat:.2f}")
-            mR.metric("Carrier (Hz)", f"{carrier:.2f}")
-            m3.metric("Escala", str(row.get("escala")))
+    if prot.get("notas"):
+        st.markdown("**Notas do protocolo:**")
+        st.write(prot.get("notas"))
 
-            # tocar binaural
-            st.components.v1.html(
-                webaudio_binaural_html(carrier, beat, int(dur), None, float(vol)),
-                height=300
-            )
-            wav = synth_binaural_wav(carrier, beat, seconds=min(int(dur), 20))
-            st.audio(wav, format="audio/wav")
-            st.download_button(
-                "Baixar WAV (20s)",
-                data=wav,
-                file_name=f"binaural_{int(carrier)}_{beat:.1f}.wav",
-                mime="audio/wav",
-                key=K("emo","dl")
-            )
+    st.markdown("---")
 
-            with st.expander("Detalhes e recomendações"):
-                st.write("**Frequências sugeridas:**", fmt_list_or_dict(row.get("frequencias")))
-                st.write("**Chakras:**", fmt_list_or_dict(row.get("chakras")))
-                st.write("**Cores:**", fmt_list_or_dict(row.get("cores")))
-                st.write("**Cristais:**", fmt_list_or_dict(row.get("cristais")))
-                # afirmações em lista
-                af = row.get("afirmacoes")
-                if isinstance(af, list):
-                    st.markdown("**Afirmações:**")
-                    for a in af:
-                        st.markdown(f"- {a}")
-                else:
-                    st.write("**Afirmações:**", af)
-                st.write("**Respiração:**", row.get("respiracao"))
-                st.caption(row.get("notas") or "")
-                
-  
+    # ---- Ações rápidas ----
+    cA1, cA2, cA3, cA4 = st.columns([1,1,1,2])
+
+    # Atualizar status
+    status_atual = str(row.get("status") or "rascunho")
+    novo_status = cA1.selectbox("Status", ["rascunho","em andamento","concluida","cancelada"],
+                                index=["rascunho","em andamento","concluida","cancelada"].index(status_atual)
+                                if status_atual in ["rascunho","em andamento","concluida","cancelada"] else 0,
+                                key=K("sessoes","status_sel"))
+    if cA2.button("💾 Atualizar status", use_container_width=True, key=K("sessoes","btn_status")):
+        try:
+            sb.table("sessions").update({"status": novo_status}).eq("id", int(sel_id)).execute()
+            st.success("Status atualizado.")
+            st.cache_data.clear()
+        except Exception as e:
+            st.error(f"Erro ao atualizar status: {getattr(e,'message',e)}")
+
+    # Duplicar sessão
+    if cA3.button("🧬 Duplicar como rascunho", use_container_width=True, key=K("sessoes","btn_dup")):
+        try:
+            payload = {
+                "patient_id": row.get("patient_id"),
+                "data": datetime.utcnow().isoformat(),
+                "tipo": row.get("tipo") or "Misto",
+                "status": "rascunho",
+                "protocolo": prot,
+            }
+            sb.table("sessions").insert(payload).execute()
+            st.success("Sessão duplicada como rascunho.")
+            st.cache_data.clear()
+        except Exception as e:
+            st.error(f"Erro ao duplicar: {getattr(e,'message',e)}")
+
+    # Excluir sessão
+    with cA4:
+        colX1, colX2 = st.columns([2,1])
+        ok_del = colX1.checkbox("Confirmar exclusão", key=K("sessoes","ok_del"))
+        if colX2.button("🗑️ Excluir", use_container_width=True, key=K("sessoes","btn_del")):
+            if not ok_del:
+                st.warning("Marque 'Confirmar exclusão' para remover.")
+            else:
+                try:
+                    sb.table("sessions").delete().eq("id", int(sel_id)).execute()
+                    st.success("Sessão excluída.")
+                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"Erro ao excluir: {getattr(e,'message',e)}")
+
+    st.markdown("---")
+
+    # ---- Aplicar no Planner (preenche campos nas outras abas) ----
+    st.markdown("### 🚀 Aplicar no Planner")
+    st.caption("Isso pré-seleciona paciente, frequências e tenta alinhar presets nas abas correspondentes.")
+
+    if st.button("Aplicar seleção no Planner", key=K("sessoes","aplicar_planner"), use_container_width=True):
+        try:
+            # Paciente
+            pac_label = row.get("Paciente") or mapa_pid_nome.get(int(row.get("patient_id") or 0), None)
+            if pac_label:
+                st.session_state[K("planner","paciente")] = pac_label
+
+            # Frequências (monta labels iguais aos do Planner)
+            prot_freqs = [ (x.get("code") if isinstance(x,dict) else str(x)) for x in (prot.get("frequencias") or []) ]
+            labels_ok = [planner_labels_by_code[c] for c in prot_freqs if c in planner_labels_by_code]
+            if labels_ok:
+                st.session_state[K("planner","freqs")] = labels_ok
+
+            # Binaural (tenta setar pelo nome do preset se existir)
+            bnome = str((prot.get("binaural") or {}).get("nome") or "").strip()
+            if bnome and bnome in pres_bina_by_name:
+                st.session_state[K("planner","binaural")] = bnome
+
+            # Cama (preset por nome)
+            cnome = str((prot.get("cama") or {}).get("nome") or "").strip()
+            if cnome and cnome in pres_cama_by_name:
+                st.session_state[K("planner","cama")] = cnome
+
+            # Plano fito (por name)
+            pname = str((prot.get("fitoterapia_plan") or {}).get("name") or "").strip()
+            if pname and pname in plan_by_name:
+                st.session_state[K("planner","fitoplan")] = pname
+
+            # Notas
+            if prot.get("notas"):
+                st.session_state[K("planner","notas")] = str(prot.get("notas"))
+
+            st.success("Aplicado! Abra a aba “Sessão (Planner)” para conferir os campos preenchidos.")
+        except Exception as e:
+            st.error(f"Não foi possível aplicar no Planner: {getattr(e,'message',e)}")
+
+    st.caption("Dica: você pode tocar imediatamente o binaural acima na aba **Binaural** usando os mesmos parâmetros.")
+
