@@ -1671,7 +1671,8 @@ with tabs[11]:
 # - 'tabs' criado com a aba "Sessões" incluída
 # Ele é tolerante: se TAB_LABELS não existir, cai para a última aba.
 
-with tabs[(TAB_LABELS.index("Sessões") if 'TAB_LABELS' in globals() and "Sessões" in TAB_LABELS else -1)]:
+with tabs[13]:
+#with tabs[(TAB_LABELS.index("Sessões") if 'TAB_LABELS' in globals() and "Sessões" in TAB_LABELS else -1)]:
     st.subheader("🗂️ Sessões salvas")
 
     if not sb:
