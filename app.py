@@ -1665,14 +1665,116 @@ with tabs[11]:
                 
 
 
-# ===================== ABA: SESSÕES =====================
-# OBS: este bloco assume que você já tem:
-# - sb_select(...) e K(...) definidos no topo do app
-# - 'tabs' criado com a aba "Sessões" incluída
-# Ele é tolerante: se TAB_LABELS não existir, cai para a última aba.
+# ========== Emoções ==========
+with tabs[11]:
+    st.subheader("Emoções — mapa e recomendações")
 
-with tabs[13]:
-#with tabs[(TAB_LABELS.index("Sessões") if 'TAB_LABELS' in globals() and "Sessões" in TAB_LABELS else -1)]:
-    st.subheader("🗂️ Sessões salvas")
+    if not sb:
+        st.warning("Configure SUPABASE_URL/KEY para carregar o mapa emocional.")
+    else:
+        # busca colunas reais do schema (sem 'escala' e sem 'id')
+        cols = "emocao,nivel,hz_ref,polaridade,frequencias,binaural_beat_hz,carrier_hz,chakras,cores,cristais,afirmacoes,respiracao,notas"
+        try:
+            rows = sb.table("emotions_map").select(cols).order("nivel", desc=False).execute().data
+        except Exception as e:
+            st.error(f"[emotions_map] erro: {getattr(e, 'message', e)}")
+            rows = []
 
+        df = pd.DataFrame(rows)
+        if df.empty:
+            st.info(
+                "A tabela `emotions_map` está vazia ou sem permissão de leitura.\n"
+                "Colunas esperadas: emocao, nivel, hz_ref, polaridade, frequencias(JSON), "
+                "binaural_beat_hz, carrier_hz, chakras(JSON), cores(JSON), cristais(JSON), "
+                "afirmacoes(JSON), respiracao, notas."
+            )
+        else:
+            # cria uma coluna 'escala' amigável (usa nivel; se não houver, cai pra hz_ref)
+            if "nivel" in df.columns:
+                df["escala"] = df["nivel"]
+            elif "hz_ref" in df.columns:
+                df["escala"] = df["hz_ref"]
+            else:
+                df["escala"] = None
+
+            # helpers para “embelezar” colunas json/list
+            def fmt_list_or_dict(x):
+                if isinstance(x, list):
+                    return ", ".join(map(str, x))
+                if isinstance(x, dict):
+                    # tenta deixar compacto: solfeggio/hz principais
+                    s = []
+                    if "solfeggio" in x and isinstance(x["solfeggio"], list):
+                        s.append("Solfeggio: " + ", ".join(map(str, x["solfeggio"])))
+                    if "hz" in x and isinstance(x["hz"], list):
+                        s.append("Hz: " + ", ".join(map(lambda v: f"{v}", x["hz"])))
+                    return " | ".join(s) if s else json.dumps(x, ensure_ascii=False)
+                return x
+
+            show = pd.DataFrame({
+                "Emoção": df["emocao"],
+                "Escala": df["escala"],
+                "Polaridade": df["polaridade"].str.title(),
+                "Frequências": df["frequencias"].apply(fmt_list_or_dict),
+                "Beat (Hz)": df["binaural_beat_hz"],
+                "Carrier (Hz)": df["carrier_hz"],
+                "Chakras": df["chakras"].apply(fmt_list_or_dict),
+                "Cores": df["cores"].apply(fmt_list_or_dict),
+                "Cristais": df["cristais"].apply(fmt_list_or_dict),
+                "Afirmações": df["afirmacoes"].apply(fmt_list_or_dict),
+                "Respiração": df["respiracao"],
+                "Notas": df["notas"],
+            })
+
+            st.dataframe(show, use_container_width=True, hide_index=True)
+
+            # UI de aplicação rápida: escolher emoção e tocar/gerar recomendações
+            st.markdown("### Aplicar e tocar rapidamente")
+            c1, c2, c3 = st.columns([2,1,1])
+            emo = c1.selectbox("Escolha a emoção", df["emocao"].tolist(), key=K("emo","sel"))
+            dur = c2.number_input("Duração (s)", 10, 1800, 120, 5, key=K("emo","dur"))
+            vol = c3.slider("Volume (binaural)", 0.0, 0.4, 0.12, 0.01, key=K("emo","vol"))
+
+            row = df[df["emocao"] == emo].iloc[0]
+            # extrai bate-estaca seguro
+            beat = float(row.get("binaural_beat_hz") or 10.0)
+            carrier = float(row.get("carrier_hz") or 220.0)
+
+            # info lateral
+            mL, mR, m3 = st.columns(3)
+            mL.metric("Beat (Hz)", f"{beat:.2f}")
+            mR.metric("Carrier (Hz)", f"{carrier:.2f}")
+            m3.metric("Escala", str(row.get("escala")))
+
+            # tocar binaural
+            st.components.v1.html(
+                webaudio_binaural_html(carrier, beat, int(dur), None, float(vol)),
+                height=300
+            )
+            wav = synth_binaural_wav(carrier, beat, seconds=min(int(dur), 20))
+            st.audio(wav, format="audio/wav")
+            st.download_button(
+                "Baixar WAV (20s)",
+                data=wav,
+                file_name=f"binaural_{int(carrier)}_{beat:.1f}.wav",
+                mime="audio/wav",
+                key=K("emo","dl")
+            )
+
+            with st.expander("Detalhes e recomendações"):
+                st.write("**Frequências sugeridas:**", fmt_list_or_dict(row.get("frequencias")))
+                st.write("**Chakras:**", fmt_list_or_dict(row.get("chakras")))
+                st.write("**Cores:**", fmt_list_or_dict(row.get("cores")))
+                st.write("**Cristais:**", fmt_list_or_dict(row.get("cristais")))
+                # afirmações em lista
+                af = row.get("afirmacoes")
+                if isinstance(af, list):
+                    st.markdown("**Afirmações:**")
+                    for a in af:
+                        st.markdown(f"- {a}")
+                else:
+                    st.write("**Afirmações:**", af)
+                st.write("**Respiração:**", row.get("respiracao"))
+                st.caption(row.get("notas") or "")
+                
   
