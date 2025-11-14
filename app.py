@@ -242,8 +242,10 @@ st.title("🔗 DOCE CONEXÃO")
 
 tabs = st.tabs([
     "Pacientes","Anamnese","Agenda","Sessão (Planner)","Frequências",
-    "Binaural","Cama de Cristal","Fitoterapia","Cristais","Financeiro","Biblioteca","Emoções"
+    "Binaural","Cama de Cristal","Fitoterapia","Cristais",
+    "Financeiro","Biblioteca","Emoções","Sessões salvas"
 ])
+
 
 # ========== Pacientes ==========
 with tabs[0]:
