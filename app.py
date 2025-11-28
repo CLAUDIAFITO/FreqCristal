@@ -1342,83 +1342,252 @@ with tabs[9]:
 with tabs[10]:
     st.subheader("Biblioteca de Tratamentos (Templates)")
 
+    # --- helpers locais (compactos) ---
+    def _api_err(e, where=""):
+        msg = getattr(e, "message", str(e))
+        st.error(f"[{where}] {msg}")
+
+    def _norm_freqs(fs):
+        rows = []
+        fs = fs or []
+        for x in fs:
+            if isinstance(x, dict):
+                rows.append({
+                    "code":   x.get("code")   or x.get("codigo") or "",
+                    "nome":   x.get("nome")   or "",
+                    "hz":     x.get("hz"),
+                    "tipo":   x.get("tipo")   or "",
+                    "chakra": x.get("chakra") or "",
+                })
+            else:
+                rows.append({"code": str(x or ""), "nome":"", "hz": None, "tipo":"", "chakra":""})
+        if not rows:
+            rows = [{"code":"","nome":"", "hz":None, "tipo":"", "chakra":""}]
+        dfX = pd.DataFrame(rows, columns=["code","nome","hz","tipo","chakra"])
+        return dfX
+
+    def _norm_rb(rb):
+        rb = rb or []
+        rows = []
+        for i, x in enumerate(rb, start=1):
+            if isinstance(x, dict):
+                rows.append({
+                    "ordem": x.get("ordem", i),
+                    "carrier_hz": x.get("carrier_hz"),
+                    "beat_hz": x.get("beat_hz"),
+                    "dur_min": x.get("dur_min") or x.get("duracao") or x.get("duracao_min"),
+                    "obs": x.get("obs") or x.get("notas") or "",
+                })
+            else:
+                rows.append({"ordem": i, "carrier_hz": 220.0, "beat_hz": 10.0, "dur_min": 10, "obs": ""})
+        if not rows:
+            rows = [{"ordem":1,"carrier_hz":220.0,"beat_hz":10.0,"dur_min":10,"obs":""}]
+        dfX = pd.DataFrame(rows, columns=["ordem","carrier_hz","beat_hz","dur_min","obs"])
+        dfX["ordem"] = pd.to_numeric(dfX["ordem"], errors="coerce").fillna(0).astype(int)
+        dfX = dfX.sort_values("ordem").reset_index(drop=True)
+        dfX["ordem"] = range(1, len(dfX)+1)
+        return dfX
+
+    def _norm_cama(cp):
+        # cp pode ser: string (nome do preset), dict {"etapas":[...]}, ou lista de etapas
+        etapas = []
+        if isinstance(cp, str) and cp.strip():
+            base = sb_select("cama_presets", "nome,etapas", order="nome")
+            cand = [x for x in (base or []) if (x.get("nome") or "").strip() == cp.strip()]
+            if cand:
+                etapas = cand[0].get("etapas") or []
+        elif isinstance(cp, dict):
+            etapas = cp.get("etapas") or []
+        elif isinstance(cp, list):
+            etapas = cp
+
+        rows = []
+        for i, x in enumerate(etapas, start=1):
+            if isinstance(x, dict):
+                rows.append({
+                    "ordem": x.get("ordem", i),
+                    "chakra": (x.get("chakra") or ""),
+                    "cor": (x.get("cor") or ""),
+                    "min": int(x.get("min") or 5),
+                })
+            else:
+                rows.append({"ordem": i, "chakra":"", "cor":"", "min":5})
+
+        if not rows:
+            rows = [{"ordem":i, "chakra":v, "cor":"", "min":5} for i, v in enumerate(
+                ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"], start=1)]
+        dfX = pd.DataFrame(rows, columns=["ordem","chakra","cor","min"])
+        dfX["ordem"] = pd.to_numeric(dfX["ordem"], errors="coerce").fillna(0).astype(int)
+        dfX = dfX.sort_values("ordem").reset_index(drop=True)
+        dfX["ordem"] = range(1, len(dfX)+1)
+        return dfX
+
+    def _pack_freqs(dfX):
+        out = []
+        if dfX is None or dfX.empty:
+            return out
+        for _, r in dfX.iterrows():
+            code = (str(r.get("code") or "").strip())
+            nome = (str(r.get("nome") or "").strip())
+            hz   = r.get("hz"); hz = float(hz) if pd.notnull(hz) else None
+            tipo = (str(r.get("tipo") or "").strip())
+            chakra = (str(r.get("chakra") or "").strip())
+            if not code and hz is None and not nome and not tipo and not chakra:
+                continue
+            out.append({"code": code or None, "nome": nome or None, "hz": hz, "tipo": tipo or None, "chakra": chakra or None})
+        return out
+
+    def _pack_rb(dfX):
+        out = []
+        if dfX is None or dfX.empty:
+            return out
+        for _, r in dfX.iterrows():
+            try:
+                ordem = int(r.get("ordem") or 0)
+            except Exception:
+                ordem = 0
+            carrier = r.get("carrier_hz"); carrier = float(carrier) if pd.notnull(carrier) else None
+            beat    = r.get("beat_hz");    beat    = float(beat)    if pd.notnull(beat)    else None
+            dur     = r.get("dur_min");    dur     = int(dur)       if pd.notnull(dur)     else None
+            obs     = str(r.get("obs") or "").strip() or None
+            if not carrier and not beat and not dur and not obs:
+                continue
+            out.append({"ordem": ordem or len(out)+1, "carrier_hz": carrier, "beat_hz": beat, "dur_min": dur, "obs": obs})
+        out.sort(key=lambda x: x.get("ordem") or 0)
+        for i, x in enumerate(out, start=1): x["ordem"] = i
+        return out
+
+    def _pack_cama(dfX):
+        out = []
+        if dfX is None or dfX.empty:
+            return out
+        for _, r in dfX.iterrows():
+            ch = str(r.get("chakra") or "").strip()
+            cr = str(r.get("cor") or "").strip() or None
+            try:
+                mn = int(r.get("min") or 0)
+            except Exception:
+                mn = 0
+            if not ch and not cr and mn <= 0:
+                continue
+            out.append({"ordem": int(r.get("ordem") or len(out)+1), "chakra": ch, "cor": cr, "min": max(1, mn or 1)})
+        out.sort(key=lambda x: x.get("ordem") or 0)
+        for i, x in enumerate(out, start=1): x["ordem"] = i
+        return {"etapas": out}
+
+    # --- carrega templates existentes ---
     tpls = sb_select(
         "therapy_templates",
         "id,name,objetivo,roteiro_binaural,frequencias_suporte,cama_preset,phyto_plan,notas",
         order="name"
     )
+    nomes = [t["name"] for t in (tpls or [])]
+    mapa  = {t["name"]: t for t in (tpls or [])}
 
-    if not tpls:
-        st.info("Sem templates ou sem permissão de leitura (RLS).")
+    NEW_LABEL = "(+ Novo template…)"
+    choices = [NEW_LABEL] + nomes if True else nomes
+    sel = st.selectbox("Template", choices or [NEW_LABEL], key=K("biblioteca","template"))
+
+    # ---------- NOVO TEMPLATE ----------
+    if sel == NEW_LABEL:
+        with st.form(K("biblioteca","novo_form")):
+            c1, c2 = st.columns([2,1])
+            novo_nome = c1.text_input("Nome do template", value="Meu Template", key=K("biblioteca","novo_nome"))
+            objetivo  = c2.text_input("Objetivo (curto)", value="", key=K("biblioteca","novo_obj"))
+            st.caption("Edite os grids abaixo e clique em **Criar**.")
+
+            st.markdown("### Frequências de suporte")
+            df_freqs = st.data_editor(
+                _norm_freqs([]), num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=K("biblioteca","novo_freqs"),
+                column_config={
+                    "hz": st.column_config.NumberColumn("Hz", step=1.0),
+                    "chakra": st.column_config.SelectboxColumn("Chakra",
+                                options=["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]),
+                }
+            )
+
+            st.markdown("### Roteiro binaural")
+            df_rb = st.data_editor(
+                _norm_rb([]), num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=K("biblioteca","novo_rb"),
+                column_config={
+                    "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
+                    "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", step=1.0),
+                    "beat_hz": st.column_config.NumberColumn("Beat (Hz)", step=0.5),
+                    "dur_min": st.column_config.NumberColumn("Duração (min)", step=1),
+                    "obs": st.column_config.TextColumn("Observações"),
+                }
+            )
+
+            st.markdown("### Cama — etapas")
+            df_cama = st.data_editor(
+                _norm_cama([]), num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=K("biblioteca","novo_cama"),
+                column_config={
+                    "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
+                    "chakra": st.column_config.SelectboxColumn("Chakra",
+                               options=["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]),
+                    "cor": st.column_config.TextColumn("Cor"),
+                    "min": st.column_config.NumberColumn("Minutos", min_value=1, step=1),
+                }
+            )
+            st.caption(f"Duração total prevista: **{int(pd.to_numeric(df_cama['min'], errors='coerce').fillna(0).sum())} min**")
+
+            notas = st.text_area("Notas do template", key=K("biblioteca","novo_notas"))
+
+            criar = st.form_submit_button("➕ Criar template", use_container_width=True)
+            if criar and sb:
+                nome_ok = (novo_nome or "").strip()
+                if not nome_ok:
+                    st.warning("Informe um **nome** para o template.")
+                    st.stop()
+                if nome_ok in nomes:
+                    st.error("Já existe um template com esse nome. Escolha outro.")
+                    st.stop()
+                payload = {
+                    "name": nome_ok,
+                    "objetivo": objetivo or None,
+                    "frequencias_suporte": _pack_freqs(df_freqs),
+                    "roteiro_binaural": _pack_rb(df_rb),
+                    "cama_preset": _pack_cama(df_cama),
+                    "phyto_plan": None,
+                    "notas": (notas or None),
+                }
+                try:
+                    sb.table("therapy_templates").insert(payload).execute()
+                    st.success(f"Template **{nome_ok}** criado.")
+                    st.cache_data.clear()
+                except Exception as e:
+                    _api_err(e, "therapy_templates.insert")
+
+    # ---------- EDITAR/CLONAR EXISTENTE ----------
     else:
-        nomes = [t["name"] for t in tpls]
-        mapa  = {t["name"]: t for t in tpls}
-
-        sel = st.selectbox("Template", nomes, key=K("biblioteca","template"))
-        t   = mapa[sel]
+        t = mapa.get(sel) or {}
         template_id = t.get("id")
 
         st.text_input("Objetivo", value=str(t.get("objetivo","")), key=K("biblioteca","objetivo"), disabled=True)
         st.caption("Edite os componentes abaixo em grid (as alterações serão salvas no template).")
 
-        # --------- Frequências de suporte (grid) ---------
+        # Frequências de suporte
         st.markdown("### Frequências de suporte (grid)")
-        def _norm_freqs(fs):
-            rows = []
-            fs = fs or []
-            for x in fs:
-                if isinstance(x, dict):
-                    rows.append({
-                        "code":   x.get("code")   or x.get("codigo") or "",
-                        "nome":   x.get("nome")   or "",
-                        "hz":     x.get("hz"),
-                        "tipo":   x.get("tipo")   or "",
-                        "chakra": x.get("chakra") or "",
-                    })
-                else:
-                    rows.append({"code": str(x), "nome":"", "hz": None, "tipo":"", "chakra":""})
-            if not rows:
-                rows = [{"code":"","nome":"", "hz":None, "tipo":"", "chakra":""}]
-            dfX = pd.DataFrame(rows, columns=["code","nome","hz","tipo","chakra"])
-            return dfX
-
-        df_freqs = _norm_freqs(t.get("frequencias_suporte"))
         df_freqs = st.data_editor(
-            df_freqs, num_rows="dynamic", use_container_width=True, hide_index=True,
+            _norm_freqs(t.get("frequencias_suporte")),
+            num_rows="dynamic", use_container_width=True, hide_index=True,
+            key=K("biblioteca","freqs"),
             column_config={
                 "hz": st.column_config.NumberColumn("Hz", step=1.0),
                 "chakra": st.column_config.SelectboxColumn("Chakra",
-                           options=["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]),
+                            options=["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]),
             }
         )
 
-        # --------- Roteiro binaural (grid) ---------
+        # Roteiro binaural
         st.markdown("### Roteiro binaural (grid)")
-        def _norm_rb(rb):
-            rb = rb or []
-            rows = []
-            for i, x in enumerate(rb, start=1):
-                if isinstance(x, dict):
-                    rows.append({
-                        "ordem": x.get("ordem", i),
-                        "carrier_hz": x.get("carrier_hz"),
-                        "beat_hz": x.get("beat_hz"),
-                        "dur_min": x.get("dur_min") or x.get("duracao") or x.get("duracao_min"),
-                        "obs": x.get("obs") or x.get("notas") or "",
-                    })
-                else:
-                    rows.append({"ordem": i, "carrier_hz": 220.0, "beat_hz": 10.0, "dur_min": 10, "obs": ""})
-            if not rows:
-                rows = [{"ordem":1,"carrier_hz":220.0,"beat_hz":10.0,"dur_min":10,"obs":""}]
-            dfX = pd.DataFrame(rows, columns=["ordem","carrier_hz","beat_hz","dur_min","obs"])
-            dfX["ordem"] = pd.to_numeric(dfX["ordem"], errors="coerce").fillna(0).astype(int)
-            dfX = dfX.sort_values("ordem").reset_index(drop=True)
-            dfX["ordem"] = range(1, len(dfX)+1)
-            return dfX
-
-        df_rb = _norm_rb(t.get("roteiro_binaural"))
         df_rb = st.data_editor(
-            df_rb, num_rows="dynamic", use_container_width=True, hide_index=True,
+            _norm_rb(t.get("roteiro_binaural")),
+            num_rows="dynamic", use_container_width=True, hide_index=True,
+            key=K("biblioteca","rb"),
             column_config={
                 "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
                 "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", step=1.0),
@@ -1428,44 +1597,12 @@ with tabs[10]:
             }
         )
 
-        # --------- Cama preset (grid) ---------
+        # Cama
         st.markdown("### Cama — etapas (grid)")
-        def _norm_cama(cp):
-            # cp pode ser: string (nome do preset), dict {"etapas":[...]}, ou lista de etapas
-            etapas = []
-            if isinstance(cp, str) and cp.strip():
-                # tenta buscar preset pelo nome
-                base = sb_select("cama_presets", "nome,etapas", order="nome")
-                cand = [x for x in (base or []) if (x.get("nome") or "").strip() == cp.strip()]
-                if cand:
-                    etapas = cand[0].get("etapas") or []
-            elif isinstance(cp, dict):
-                etapas = cp.get("etapas") or []
-            elif isinstance(cp, list):
-                etapas = cp
-            rows = []
-            for i, x in enumerate(etapas, start=1):
-                if isinstance(x, dict):
-                    rows.append({
-                        "ordem": x.get("ordem", i),
-                        "chakra": (x.get("chakra") or ""),
-                        "cor": (x.get("cor") or ""),
-                        "min": int(x.get("min") or 5),
-                    })
-                else:
-                    rows.append({"ordem": i, "chakra":"", "cor":"", "min":5})
-            if not rows:
-                rows = [{"ordem":i, "chakra":v, "cor":"", "min":5} for i, v in enumerate(
-                    ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"], start=1)]
-            dfX = pd.DataFrame(rows, columns=["ordem","chakra","cor","min"])
-            dfX["ordem"] = pd.to_numeric(dfX["ordem"], errors="coerce").fillna(0).astype(int)
-            dfX = dfX.sort_values("ordem").reset_index(drop=True)
-            dfX["ordem"] = range(1, len(dfX)+1)
-            return dfX
-
-        df_cama = _norm_cama(t.get("cama_preset"))
         df_cama = st.data_editor(
-            df_cama, num_rows="dynamic", use_container_width=True, hide_index=True,
+            _norm_cama(t.get("cama_preset")),
+            num_rows="dynamic", use_container_width=True, hide_index=True,
+            key=K("biblioteca","cama"),
             column_config={
                 "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
                 "chakra": st.column_config.SelectboxColumn("Chakra",
@@ -1478,60 +1615,6 @@ with tabs[10]:
 
         # Notas
         notas = st.text_area("Notas do template", value=str(t.get("notas") or ""), key=K("biblioteca","notas"))
-
-        # --------- Salvar ---------
-        def _pack_freqs(dfX):
-            out = []
-            if dfX is None or dfX.empty:
-                return out
-            for _, r in dfX.iterrows():
-                code = (str(r.get("code") or "").strip())
-                nome = (str(r.get("nome") or "").strip())
-                hz   = r.get("hz"); hz = float(hz) if pd.notnull(hz) else None
-                tipo = (str(r.get("tipo") or "").strip())
-                chakra = (str(r.get("chakra") or "").strip())
-                if not code and hz is None and not nome and not tipo and not chakra:
-                    continue
-                out.append({"code": code or None, "nome": nome or None, "hz": hz, "tipo": tipo or None, "chakra": chakra or None})
-            return out
-
-        def _pack_rb(dfX):
-            out = []
-            if dfX is None or dfX.empty:
-                return out
-            for _, r in dfX.iterrows():
-                try:
-                    ordem = int(r.get("ordem") or 0)
-                except Exception:
-                    ordem = 0
-                carrier = r.get("carrier_hz"); carrier = float(carrier) if pd.notnull(carrier) else None
-                beat    = r.get("beat_hz");    beat    = float(beat)    if pd.notnull(beat)    else None
-                dur     = r.get("dur_min");    dur     = int(dur)       if pd.notnull(dur)     else None
-                obs     = str(r.get("obs") or "").strip() or None
-                if not carrier and not beat and not dur and not obs:
-                    continue
-                out.append({"ordem": ordem or len(out)+1, "carrier_hz": carrier, "beat_hz": beat, "dur_min": dur, "obs": obs})
-            out.sort(key=lambda x: x.get("ordem") or 0)
-            for i, x in enumerate(out, start=1): x["ordem"] = i
-            return out
-
-        def _pack_cama(dfX):
-            out = []
-            if dfX is None or dfX.empty:
-                return out
-            for _, r in dfX.iterrows():
-                ch = str(r.get("chakra") or "").strip()
-                cr = str(r.get("cor") or "").strip() or None
-                try:
-                    mn = int(r.get("min") or 0)
-                except Exception:
-                    mn = 0
-                if not ch and not cr and mn <= 0:
-                    continue
-                out.append({"ordem": int(r.get("ordem") or len(out)+1), "chakra": ch, "cor": cr, "min": max(1, mn or 1)})
-            out.sort(key=lambda x: x.get("ordem") or 0)
-            for i, x in enumerate(out, start=1): x["ordem"] = i
-            return {"etapas": out}
 
         c1, c2 = st.columns(2)
         if c1.button("💾 Salvar alterações do template", use_container_width=True, key=K("biblioteca","save")) and sb:
@@ -1551,7 +1634,34 @@ with tabs[10]:
                 st.success("Template atualizado.")
                 st.cache_data.clear()
             except Exception as e:
-                st.error(f"Erro ao salvar: {getattr(e, 'message', e)}")
+                _api_err(e, "therapy_templates.update")
+
+        with st.expander("🧬 Duplicar como…"):
+            novo_nome = st.text_input("Novo nome", value=f"{sel} (cópia)", key=K("biblioteca","dup_nome"))
+            objetivo_dup = st.text_input("Objetivo", value=str(t.get("objetivo") or ""), key=K("biblioteca","dup_obj"))
+            if st.button("Duplicar", key=K("biblioteca","dup_btn")) and sb:
+                name_ok = (novo_nome or "").strip()
+                if not name_ok:
+                    st.warning("Informe um **novo nome** para a cópia.")
+                elif name_ok in nomes:
+                    st.error("Já existe um template com esse nome.")
+                else:
+                    try:
+                        payload = {
+                            "name": name_ok,
+                            "objetivo": objetivo_dup or None,
+                            "frequencias_suporte": _pack_freqs(df_freqs),
+                            "roteiro_binaural": _pack_rb(df_rb),
+                            "cama_preset": _pack_cama(df_cama),
+                            "phyto_plan": t.get("phyto_plan") or None,
+                            "notas": (notas or None),
+                        }
+                        sb.table("therapy_templates").insert(payload).execute()
+                        st.success(f"Criado **{name_ok}**.")
+                        st.cache_data.clear()
+                    except Exception as e:
+                        _api_err(e, "therapy_templates.insert")
+
 
 # ========== Emoções ==========
 with tabs[11]:
