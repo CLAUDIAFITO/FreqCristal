@@ -1347,107 +1347,135 @@ with tabs[9]:
 
 # ========== Biblioteca ==========
 with tabs[10]:
-    st.subheader("Biblioteca de Tratamentos (Templates)")
+    import pandas as pd
+    import json
+    import uuid
 
-    # --- helpers locais (compactos) ---
-    def _api_err(e, where=""):
-        msg = getattr(e, "message", str(e))
-        st.error(f"[{where}] {msg}")
+    st.subheader("Biblioteca — Templates")
 
-    def _norm_freqs(fs):
+    if not sb:
+        st.warning("Configure SUPABASE_URL/KEY para usar a Biblioteca.")
+        st.stop()
+
+    # ---------------- helpers ----------------
+    def _is_uuid(x):
+        try:
+            uuid.UUID(str(x))
+            return True
+        except Exception:
+            return False
+
+    def _norm_freqs(freqs):
+        """
+        freqs pode ser None, list[dict] ou dict. Normaliza para DataFrame:
+        colunas: code, nome, hz, tipo, chakra
+        """
         rows = []
-        fs = fs or []
-        for x in fs:
-            if isinstance(x, dict):
-                rows.append({
-                    "code":   x.get("code")   or x.get("codigo") or "",
-                    "nome":   x.get("nome")   or "",
-                    "hz":     x.get("hz"),
-                    "tipo":   x.get("tipo")   or "",
-                    "chakra": x.get("chakra") or "",
-                })
-            else:
-                rows.append({"code": str(x or ""), "nome":"", "hz": None, "tipo":"", "chakra":""})
+        if isinstance(freqs, list):
+            for x in freqs:
+                if isinstance(x, dict):
+                    rows.append({
+                        "code": x.get("code") or "",
+                        "nome": x.get("nome") or "",
+                        "hz": x.get("hz"),
+                        "tipo": x.get("tipo") or "",
+                        "chakra": x.get("chakra") or "",
+                    })
+        elif isinstance(freqs, dict):
+            # se vier dict solto, tenta achar lista em alguma chave comum
+            lst = freqs.get("items") or freqs.get("frequencias") or []
+            if isinstance(lst, list):
+                for x in lst:
+                    if isinstance(x, dict):
+                        rows.append({
+                            "code": x.get("code") or "",
+                            "nome": x.get("nome") or "",
+                            "hz": x.get("hz"),
+                            "tipo": x.get("tipo") or "",
+                            "chakra": x.get("chakra") or "",
+                        })
+
         if not rows:
-            rows = [{"code":"","nome":"", "hz":None, "tipo":"", "chakra":""}]
-        dfX = pd.DataFrame(rows, columns=["code","nome","hz","tipo","chakra"])
+            rows = [{"code": "", "nome": "", "hz": None, "tipo": "", "chakra": ""}]
+
+        dfX = pd.DataFrame(rows, columns=["code", "nome", "hz", "tipo", "chakra"])
+        dfX["hz"] = pd.to_numeric(dfX["hz"], errors="coerce")
         return dfX
 
     def _norm_rb(rb):
-        rb = rb or []
         rows = []
-        for i, x in enumerate(rb, start=1):
+        if isinstance(rb, list):
+            for x in rb:
+                if isinstance(x, dict):
+                    rows.append({
+                        "ordem": x.get("ordem", 0),
+                        "carrier_hz": x.get("carrier_hz"),
+                        "beat_hz": x.get("beat_hz"),
+                        "dur_min": x.get("dur_min"),
+                        "obs": x.get("obs") or "",
+                    })
+
+        if not rows:
+            rows = [{"ordem": 1, "carrier_hz": 220.0, "beat_hz": 10.0, "dur_min": 10, "obs": ""}]
+
+        dfX = pd.DataFrame(rows, columns=["ordem", "carrier_hz", "beat_hz", "dur_min", "obs"])
+        dfX["ordem"] = pd.to_numeric(dfX["ordem"], errors="coerce").fillna(0).astype(int)
+        dfX = dfX.sort_values("ordem").reset_index(drop=True)
+        dfX["ordem"] = range(1, len(dfX) + 1)
+        return dfX
+
+    def _norm_cama(cp):
+        # cp pode ser: uuid (id do preset), string (nome), dict {"etapas":[...]}, ou lista de etapas
+        etapas = []
+
+        if isinstance(cp, str) and cp.strip():
+            s = cp.strip()
+
+            # 1) Se parece UUID: busca por id
+            if _is_uuid(s):
+                try:
+                    row = sb.table("cama_presets").select("nome,etapas").eq("id", s).limit(1).execute().data
+                    if row:
+                        etapas = row[0].get("etapas") or []
+                except Exception:
+                    etapas = []
+
+            # 2) Senão: trata como nome
+            if not etapas:
+                try:
+                    row = sb.table("cama_presets").select("nome,etapas").eq("nome", s).limit(1).execute().data
+                    if row:
+                        etapas = row[0].get("etapas") or []
+                except Exception:
+                    etapas = []
+
+        elif isinstance(cp, dict):
+            etapas = cp.get("etapas") or []
+        elif isinstance(cp, list):
+            etapas = cp
+
+        rows = []
+        for i, x in enumerate(etapas, start=1):
             if isinstance(x, dict):
                 rows.append({
                     "ordem": x.get("ordem", i),
-                    "carrier_hz": x.get("carrier_hz"),
-                    "beat_hz": x.get("beat_hz"),
-                    "dur_min": x.get("dur_min") or x.get("duracao") or x.get("duracao_min"),
-                    "obs": x.get("obs") or x.get("notas") or "",
+                    "chakra": (x.get("chakra") or ""),
+                    "cor": (x.get("cor") or ""),
+                    "min": int(x.get("min") or 5),
                 })
             else:
-                rows.append({"ordem": i, "carrier_hz": 220.0, "beat_hz": 10.0, "dur_min": 10, "obs": ""})
+                rows.append({"ordem": i, "chakra": "", "cor": "", "min": 5})
+
         if not rows:
-            rows = [{"ordem":1,"carrier_hz":220.0,"beat_hz":10.0,"dur_min":10,"obs":""}]
-        dfX = pd.DataFrame(rows, columns=["ordem","carrier_hz","beat_hz","dur_min","obs"])
+            rows = [{"ordem": i, "chakra": v, "cor": "", "min": 5} for i, v in enumerate(
+                ["raiz", "sacral", "plexo", "cardiaco", "laringeo", "terceiro_olho", "coronal"], start=1
+            )]
+
+        dfX = pd.DataFrame(rows, columns=["ordem", "chakra", "cor", "min"])
         dfX["ordem"] = pd.to_numeric(dfX["ordem"], errors="coerce").fillna(0).astype(int)
         dfX = dfX.sort_values("ordem").reset_index(drop=True)
-        dfX["ordem"] = range(1, len(dfX)+1)
+        dfX["ordem"] = range(1, len(dfX) + 1)
         return dfX
-
-def _norm_cama(cp):
-    # cp pode ser: uuid (id do preset), string (nome), dict {"etapas":[...]}, ou lista de etapas
-    etapas = []
-
-    if isinstance(cp, str) and cp.strip():
-        s = cp.strip()
-
-        # 1) Se parece UUID: busca por id
-        if _is_uuid(s):
-            try:
-                row = sb.table("cama_presets").select("nome,etapas").eq("id", s).limit(1).execute().data
-                if row:
-                    etapas = row[0].get("etapas") or []
-            except Exception:
-                etapas = []
-
-        # 2) Senão: trata como nome
-        if not etapas:
-            try:
-                base = sb_select("cama_presets", "nome,etapas", order="nome")
-                cand = [x for x in (base or []) if (x.get("nome") or "").strip() == s]
-                if cand:
-                    etapas = cand[0].get("etapas") or []
-            except Exception:
-                etapas = []
-
-    elif isinstance(cp, dict):
-        etapas = cp.get("etapas") or []
-    elif isinstance(cp, list):
-        etapas = cp
-
-    rows = []
-    for i, x in enumerate(etapas, start=1):
-        if isinstance(x, dict):
-            rows.append({
-                "ordem": x.get("ordem", i),
-                "chakra": (x.get("chakra") or ""),
-                "cor": (x.get("cor") or ""),
-                "min": int(x.get("min") or 5),
-            })
-        else:
-            rows.append({"ordem": i, "chakra": "", "cor": "", "min": 5})
-
-    if not rows:
-        rows = [{"ordem":i, "chakra":v, "cor":"", "min":5} for i, v in enumerate(
-            ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"], start=1)]
-
-    dfX = pd.DataFrame(rows, columns=["ordem","chakra","cor","min"])
-    dfX["ordem"] = pd.to_numeric(dfX["ordem"], errors="coerce").fillna(0).astype(int)
-    dfX = dfX.sort_values("ordem").reset_index(drop=True)
-    dfX["ordem"] = range(1, len(dfX)+1)
-    return dfX
-
 
     def _pack_freqs(dfX):
         out = []
@@ -1456,12 +1484,19 @@ def _norm_cama(cp):
         for _, r in dfX.iterrows():
             code = (str(r.get("code") or "").strip())
             nome = (str(r.get("nome") or "").strip())
-            hz   = r.get("hz"); hz = float(hz) if pd.notnull(hz) else None
+            hz = r.get("hz")
+            hz = float(hz) if pd.notnull(hz) else None
             tipo = (str(r.get("tipo") or "").strip())
             chakra = (str(r.get("chakra") or "").strip())
             if not code and hz is None and not nome and not tipo and not chakra:
                 continue
-            out.append({"code": code or None, "nome": nome or None, "hz": hz, "tipo": tipo or None, "chakra": chakra or None})
+            out.append({
+                "code": code or None,
+                "nome": nome or None,
+                "hz": hz,
+                "tipo": tipo or None,
+                "chakra": chakra or None
+            })
         return out
 
     def _pack_rb(dfX):
@@ -1479,38 +1514,24 @@ def _norm_cama(cp):
             obs     = str(r.get("obs") or "").strip() or None
             if not carrier and not beat and not dur and not obs:
                 continue
-            out.append({"ordem": ordem or len(out)+1, "carrier_hz": carrier, "beat_hz": beat, "dur_min": dur, "obs": obs})
+            out.append({"ordem": ordem or len(out) + 1, "carrier_hz": carrier, "beat_hz": beat, "dur_min": dur, "obs": obs})
         out.sort(key=lambda x: x.get("ordem") or 0)
-        for i, x in enumerate(out, start=1): x["ordem"] = i
+        for i, x in enumerate(out, start=1):
+            x["ordem"] = i
         return out
 
-    def _pack_cama(dfX):
-        out = []
-        if dfX is None or dfX.empty:
-            return out
-        for _, r in dfX.iterrows():
-            ch = str(r.get("chakra") or "").strip()
-            cr = str(r.get("cor") or "").strip() or None
-            try:
-                mn = int(r.get("min") or 0)
-            except Exception:
-                mn = 0
-            if not ch and not cr and mn <= 0:
-                continue
-            out.append({"ordem": int(r.get("ordem") or len(out)+1), "chakra": ch, "cor": cr, "min": max(1, mn or 1)})
-        out.sort(key=lambda x: x.get("ordem") or 0)
-        for i, x in enumerate(out, start=1): x["ordem"] = i
-        return {"etapas": out}
-
-    def _upsert_cama_preset_and_get_id(preset_name: str, df_cama):
-        # monta etapas_json a partir do grid
+    def _save_cama_preset_and_get_id(preset_name: str, df_cama):
+        """
+        Salva/atualiza cama_presets e devolve o UUID.
+        Não depende de UNIQUE em nome: se existir pelo nome, atualiza; senão, insere.
+        """
         etapas = []
         if df_cama is not None and not df_cama.empty:
             _d = df_cama.copy()
             _d["ordem"] = pd.to_numeric(_d["ordem"], errors="coerce").fillna(0).astype(int)
             _d = _d.sort_values("ordem").reset_index(drop=True)
-            _d["ordem"] = range(1, len(_d)+1)
-    
+            _d["ordem"] = range(1, len(_d) + 1)
+
             for _, r in _d.iterrows():
                 ch = str(r.get("chakra") or "").strip()
                 if not ch:
@@ -1518,90 +1539,101 @@ def _norm_cama(cp):
                 cr = str(r.get("cor") or "").strip() or None
                 mn = int(pd.to_numeric(r.get("min"), errors="coerce") or 5)
                 etapas.append({"ordem": int(r.get("ordem")), "chakra": ch, "cor": cr, "min": max(1, mn)})
-    
+
         dur = int(sum(e["min"] for e in etapas)) if etapas else 0
-    
-        # upsert no cama_presets (precisa existir UNIQUE em nome; se não tiver, me avisa que ajusto)
-        sb.table("cama_presets").upsert({
+
+        payload = {
             "nome": preset_name,
             "etapas": etapas,
             "duracao_min": dur,
             "notas": "Auto-gerado pelo template"
-        }).execute()
-    
-        # busca id do preset recém salvo
-        got = sb.table("cama_presets").select("id").eq("nome", preset_name).limit(1).execute().data
-        return (got[0].get("id") if got else None)
+        }
 
-              
-    # --- carrega templates existentes ---
+        # busca por nome
+        try:
+            got = sb.table("cama_presets").select("id").eq("nome", preset_name).limit(1).execute().data or []
+        except Exception:
+            got = []
+
+        if got:
+            cama_id = got[0].get("id")
+            sb.table("cama_presets").update(payload).eq("id", cama_id).execute()
+            return cama_id
+
+        ins = sb.table("cama_presets").insert(payload).execute().data or []
+        return ins[0].get("id") if ins else None
+
+    # ---------------- dados ----------------
     tpls = sb_select(
         "therapy_templates",
         "id,name,objetivo,roteiro_binaural,frequencias_suporte,cama_preset,phyto_plan,notas",
         order="name"
     )
-    nomes = [t["name"] for t in (tpls or [])]
-    mapa  = {t["name"]: t for t in (tpls or [])}
+    nomes = [t.get("name") for t in (tpls or []) if t.get("name")]
+    mapa  = {t.get("name"): t for t in (tpls or []) if t.get("name")}
 
     NEW_LABEL = "(+ Novo template…)"
-    choices = [NEW_LABEL] + nomes if True else nomes
-    sel = st.selectbox("Template", choices or [NEW_LABEL], key=K("biblioteca","template"))
+    choices = [NEW_LABEL] + nomes
+    sel = st.selectbox("Template", choices or [NEW_LABEL], key=K("biblioteca", "template"))
 
-# ---------- NOVO TEMPLATE ----------
-if sel == NEW_LABEL:
-    with st.form(K("biblioteca","novo_form")):
-        c1, c2 = st.columns([2,1])
-        novo_nome = c1.text_input("Nome do template", value="Meu Template", key=K("biblioteca","novo_nome"))
-        objetivo  = c2.text_input("Objetivo (curto)", value="", key=K("biblioteca","novo_obj"))
-        st.caption("Edite os grids abaixo e clique em **Criar**.")
+    # ---------------- UI ----------------
+    if sel == NEW_LABEL:
+        # ---------- NOVO TEMPLATE ----------
+        with st.form(K("biblioteca", "novo_form")):
+            c1, c2 = st.columns([2, 1])
+            novo_nome = c1.text_input("Nome do template", value="Meu Template", key=K("biblioteca", "novo_nome"))
+            objetivo  = c2.text_input("Objetivo (curto)", value="", key=K("biblioteca", "novo_obj"))
+            st.caption("Edite os grids abaixo e clique em **Criar**.")
 
-        st.markdown("### Frequências de suporte")
-        df_freqs = st.data_editor(
-            _norm_freqs([]), num_rows="dynamic", use_container_width=True, hide_index=True,
-            key=K("biblioteca","novo_freqs"),
-            column_config={
-                "hz": st.column_config.NumberColumn("Hz", step=1.0),
-                "chakra": st.column_config.SelectboxColumn(
-                    "Chakra",
-                    options=["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]
-                ),
-            }
-        )
+            st.markdown("### Frequências de suporte")
+            df_freqs = st.data_editor(
+                _norm_freqs([]),
+                num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=K("biblioteca", "novo_freqs"),
+                column_config={
+                    "hz": st.column_config.NumberColumn("Hz", step=1.0),
+                    "chakra": st.column_config.SelectboxColumn(
+                        "Chakra",
+                        options=["", "raiz", "sacral", "plexo", "cardiaco", "laringeo", "terceiro_olho", "coronal"]
+                    ),
+                }
+            )
 
-        st.markdown("### Roteiro binaural")
-        df_rb = st.data_editor(
-            _norm_rb([]), num_rows="dynamic", use_container_width=True, hide_index=True,
-            key=K("biblioteca","novo_rb"),
-            column_config={
-                "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
-                "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", step=1.0),
-                "beat_hz": st.column_config.NumberColumn("Beat (Hz)", step=0.5),
-                "dur_min": st.column_config.NumberColumn("Duração (min)", step=1),
-                "obs": st.column_config.TextColumn("Observações"),
-            }
-        )
+            st.markdown("### Roteiro binaural")
+            df_rb = st.data_editor(
+                _norm_rb([]),
+                num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=K("biblioteca", "novo_rb"),
+                column_config={
+                    "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
+                    "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", step=1.0),
+                    "beat_hz": st.column_config.NumberColumn("Beat (Hz)", step=0.5),
+                    "dur_min": st.column_config.NumberColumn("Duração (min)", step=1),
+                    "obs": st.column_config.TextColumn("Observações"),
+                }
+            )
 
-        st.markdown("### Cama — etapas")
-        df_cama = st.data_editor(
-            _norm_cama([]), num_rows="dynamic", use_container_width=True, hide_index=True,
-            key=K("biblioteca","novo_cama"),
-            column_config={
-                "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
-                "chakra": st.column_config.SelectboxColumn(
-                    "Chakra",
-                    options=["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]
-                ),
-                "cor": st.column_config.TextColumn("Cor"),
-                "min": st.column_config.NumberColumn("Minutos", min_value=1, step=1),
-            }
-        )
-        st.caption(
-            f"Duração total prevista: **{int(pd.to_numeric(df_cama['min'], errors='coerce').fillna(0).sum())} min**"
-        )
+            st.markdown("### Cama — etapas")
+            df_cama = st.data_editor(
+                _norm_cama([]),
+                num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=K("biblioteca", "novo_cama"),
+                column_config={
+                    "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
+                    "chakra": st.column_config.SelectboxColumn(
+                        "Chakra",
+                        options=["raiz", "sacral", "plexo", "cardiaco", "laringeo", "terceiro_olho", "coronal"]
+                    ),
+                    "cor": st.column_config.TextColumn("Cor"),
+                    "min": st.column_config.NumberColumn("Minutos", min_value=1, step=1),
+                }
+            )
+            st.caption(f"Duração total prevista: **{int(pd.to_numeric(df_cama['min'], errors='coerce').fillna(0).sum())} min**")
 
-        notas = st.text_area("Notas do template", key=K("biblioteca","novo_notas"))
+            notas = st.text_area("Notas do template", key=K("biblioteca", "novo_notas"))
 
-        criar = st.form_submit_button("➕ Criar template", use_container_width=True)
+            criar = st.form_submit_button("➕ Criar template", use_container_width=True)
+
         if criar and sb:
             nome_ok = (novo_nome or "").strip()
             if not nome_ok:
@@ -1611,9 +1643,8 @@ if sel == NEW_LABEL:
                 st.error("Já existe um template com esse nome. Escolha outro.")
                 st.stop()
 
-            # ✅ cria/atualiza um preset de cama exclusivo do template e usa o UUID no template
             cama_name = f"{nome_ok} — Cama"
-            cama_id = _upsert_cama_preset_and_get_id(cama_name, df_cama)
+            cama_id = _save_cama_preset_and_get_id(cama_name, df_cama)
             if not cama_id:
                 st.error("Não foi possível criar/obter o preset da cama (cama_presets).")
                 st.stop()
@@ -1623,7 +1654,7 @@ if sel == NEW_LABEL:
                 "objetivo": objetivo or None,
                 "frequencias_suporte": _pack_freqs(df_freqs),
                 "roteiro_binaural": _pack_rb(df_rb),
-                "cama_preset": cama_id,   # ✅ UUID
+                "cama_preset": cama_id,  # ✅ UUID
                 "phyto_plan": None,
                 "notas": (notas or None),
             }
@@ -1635,34 +1666,33 @@ if sel == NEW_LABEL:
             except Exception as e:
                 _api_err(e, "therapy_templates.insert")
 
-
-    # ---------- EDITAR/CLONAR EXISTENTE ----------
     else:
+        # ---------- EDITAR/CLONAR EXISTENTE ----------
         t = mapa.get(sel) or {}
         template_id = t.get("id")
 
-        st.text_input("Objetivo", value=str(t.get("objetivo","")), key=K("biblioteca","objetivo"), disabled=True)
+        st.text_input("Objetivo", value=str(t.get("objetivo", "")), key=K("biblioteca", "objetivo"), disabled=True)
         st.caption("Edite os componentes abaixo em grid (as alterações serão salvas no template).")
 
-        # Frequências de suporte
         st.markdown("### Frequências de suporte (grid)")
         df_freqs = st.data_editor(
             _norm_freqs(t.get("frequencias_suporte")),
             num_rows="dynamic", use_container_width=True, hide_index=True,
-            key=K("biblioteca","freqs"),
+            key=K("biblioteca", "freqs"),
             column_config={
                 "hz": st.column_config.NumberColumn("Hz", step=1.0),
-                "chakra": st.column_config.SelectboxColumn("Chakra",
-                            options=["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]),
+                "chakra": st.column_config.SelectboxColumn(
+                    "Chakra",
+                    options=["", "raiz", "sacral", "plexo", "cardiaco", "laringeo", "terceiro_olho", "coronal"]
+                ),
             }
         )
 
-        # Roteiro binaural
         st.markdown("### Roteiro binaural (grid)")
         df_rb = st.data_editor(
             _norm_rb(t.get("roteiro_binaural")),
             num_rows="dynamic", use_container_width=True, hide_index=True,
-            key=K("biblioteca","rb"),
+            key=K("biblioteca", "rb"),
             column_config={
                 "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
                 "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", step=1.0),
@@ -1672,56 +1702,55 @@ if sel == NEW_LABEL:
             }
         )
 
-        # Cama
         st.markdown("### Cama — etapas (grid)")
         df_cama = st.data_editor(
             _norm_cama(t.get("cama_preset")),
             num_rows="dynamic", use_container_width=True, hide_index=True,
-            key=K("biblioteca","cama"),
+            key=K("biblioteca", "cama"),
             column_config={
                 "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
-                "chakra": st.column_config.SelectboxColumn("Chakra",
-                           options=["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]),
+                "chakra": st.column_config.SelectboxColumn(
+                    "Chakra",
+                    options=["raiz", "sacral", "plexo", "cardiaco", "laringeo", "terceiro_olho", "coronal"]
+                ),
                 "cor": st.column_config.TextColumn("Cor"),
                 "min": st.column_config.NumberColumn("Minutos", min_value=1, step=1),
             }
         )
         st.caption(f"Duração total prevista: **{int(pd.to_numeric(df_cama['min'], errors='coerce').fillna(0).sum())} min**")
 
-        # Notas
-        notas = st.text_area("Notas do template", value=str(t.get("notas") or ""), key=K("biblioteca","notas"))
+        notas = st.text_area("Notas do template", value=str(t.get("notas") or ""), key=K("biblioteca", "notas"))
 
         c1, c2 = st.columns(2)
-        if c1.button("💾 Salvar alterações do template", use_container_width=True, key=K("biblioteca","save")) and sb:
+        if c1.button("💾 Salvar alterações do template", use_container_width=True, key=K("biblioteca", "save")) and sb:
             try:
-             # Atualiza (ou cria) o preset da cama vinculado a este template
-                    current_cama_id = t.get("cama_preset")
-                    if current_cama_id and _is_uuid(current_cama_id):
-                        # atualiza pelo nome do preset atual (ou cria um padrão)
-                        cama_name = f"{sel} — Cama"
-                    else:
-                        cama_name = f"{sel} — Cama"
-                    
-                    cama_id = _upsert_cama_preset_and_get_id(cama_name, df_cama)
-                    
-                    payload = {
+                cama_name = f"{sel} — Cama"
+                cama_id = _save_cama_preset_and_get_id(cama_name, df_cama)
+                if not cama_id:
+                    st.error("Não foi possível salvar o preset da cama (cama_presets).")
+                    st.stop()
+
+                payload_upd = {
                     "frequencias_suporte": _pack_freqs(df_freqs),
                     "roteiro_binaural": _pack_rb(df_rb),
-                    "cama_preset": cama_id,  # mantém vínculo correto
+                    "cama_preset": cama_id,  # ✅ UUID
                     "notas": (notas or None),
                 }
 
-                payload = {
-                    "frequencias_suporte": _pack_freqs(df_freqs),
-                    "roteiro_binaural": _pack_rb(df_rb),
-                    "cama_preset": _pack_cama(df_cama),
-                    "notas": (notas or None),
-                }
-                q = sb.table("therapy_templates").update(payload)
-                if pd.notnull(template_id):
-                    q = q.eq("id", int(template_id))
+                q = sb.table("therapy_templates").update(payload_upd)
+
+                # id pode ser uuid ou int: trata ambos
+                if template_id:
+                    if _is_uuid(template_id):
+                        q = q.eq("id", str(template_id))
+                    else:
+                        try:
+                            q = q.eq("id", int(template_id))
+                        except Exception:
+                            q = q.eq("name", sel)
                 else:
                     q = q.eq("name", sel)
+
                 q.execute()
                 st.success("Template atualizado.")
                 st.cache_data.clear()
@@ -1729,9 +1758,10 @@ if sel == NEW_LABEL:
                 _api_err(e, "therapy_templates.update")
 
         with st.expander("🧬 Duplicar como…"):
-            novo_nome = st.text_input("Novo nome", value=f"{sel} (cópia)", key=K("biblioteca","dup_nome"))
-            objetivo_dup = st.text_input("Objetivo", value=str(t.get("objetivo") or ""), key=K("biblioteca","dup_obj"))
-            if st.button("Duplicar", key=K("biblioteca","dup_btn")) and sb:
+            novo_nome = st.text_input("Novo nome", value=f"{sel} (cópia)", key=K("biblioteca", "dup_nome"))
+            objetivo_dup = st.text_input("Objetivo", value=str(t.get("objetivo") or ""), key=K("biblioteca", "dup_obj"))
+
+            if st.button("Duplicar", key=K("biblioteca", "dup_btn")) and sb:
                 name_ok = (novo_nome or "").strip()
                 if not name_ok:
                     st.warning("Informe um **novo nome** para a cópia.")
@@ -1739,20 +1769,27 @@ if sel == NEW_LABEL:
                     st.error("Já existe um template com esse nome.")
                 else:
                     try:
-                        payload = {
+                        cama_name_dup = f"{name_ok} — Cama"
+                        cama_id_dup = _save_cama_preset_and_get_id(cama_name_dup, df_cama)
+                        if not cama_id_dup:
+                            st.error("Não foi possível criar/obter o preset da cama (cama_presets).")
+                            st.stop()
+
+                        payload_ins = {
                             "name": name_ok,
                             "objetivo": objetivo_dup or None,
                             "frequencias_suporte": _pack_freqs(df_freqs),
                             "roteiro_binaural": _pack_rb(df_rb),
-                            "cama_preset": _pack_cama(df_cama),
+                            "cama_preset": cama_id_dup,  # ✅ UUID
                             "phyto_plan": t.get("phyto_plan") or None,
                             "notas": (notas or None),
                         }
-                        sb.table("therapy_templates").insert(payload).execute()
+                        sb.table("therapy_templates").insert(payload_ins).execute()
                         st.success(f"Criado **{name_ok}**.")
                         st.cache_data.clear()
                     except Exception as e:
                         _api_err(e, "therapy_templates.insert")
+
 
 
 # ========== Emoções ==========
