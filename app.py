@@ -1547,87 +1547,94 @@ def _norm_cama(cp):
     choices = [NEW_LABEL] + nomes if True else nomes
     sel = st.selectbox("Template", choices or [NEW_LABEL], key=K("biblioteca","template"))
 
-    # ---------- NOVO TEMPLATE ----------
-    if sel == NEW_LABEL:
-        with st.form(K("biblioteca","novo_form")):
-            c1, c2 = st.columns([2,1])
-            novo_nome = c1.text_input("Nome do template", value="Meu Template", key=K("biblioteca","novo_nome"))
-            objetivo  = c2.text_input("Objetivo (curto)", value="", key=K("biblioteca","novo_obj"))
-            st.caption("Edite os grids abaixo e clique em **Criar**.")
+# ---------- NOVO TEMPLATE ----------
+if sel == NEW_LABEL:
+    with st.form(K("biblioteca","novo_form")):
+        c1, c2 = st.columns([2,1])
+        novo_nome = c1.text_input("Nome do template", value="Meu Template", key=K("biblioteca","novo_nome"))
+        objetivo  = c2.text_input("Objetivo (curto)", value="", key=K("biblioteca","novo_obj"))
+        st.caption("Edite os grids abaixo e clique em **Criar**.")
 
-            st.markdown("### Frequências de suporte")
-            df_freqs = st.data_editor(
-                _norm_freqs([]), num_rows="dynamic", use_container_width=True, hide_index=True,
-                key=K("biblioteca","novo_freqs"),
-                column_config={
-                    "hz": st.column_config.NumberColumn("Hz", step=1.0),
-                    "chakra": st.column_config.SelectboxColumn("Chakra",
-                                options=["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]),
-                }
-            )
+        st.markdown("### Frequências de suporte")
+        df_freqs = st.data_editor(
+            _norm_freqs([]), num_rows="dynamic", use_container_width=True, hide_index=True,
+            key=K("biblioteca","novo_freqs"),
+            column_config={
+                "hz": st.column_config.NumberColumn("Hz", step=1.0),
+                "chakra": st.column_config.SelectboxColumn(
+                    "Chakra",
+                    options=["","raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]
+                ),
+            }
+        )
 
-            st.markdown("### Roteiro binaural")
-            df_rb = st.data_editor(
-                _norm_rb([]), num_rows="dynamic", use_container_width=True, hide_index=True,
-                key=K("biblioteca","novo_rb"),
-                column_config={
-                    "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
-                    "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", step=1.0),
-                    "beat_hz": st.column_config.NumberColumn("Beat (Hz)", step=0.5),
-                    "dur_min": st.column_config.NumberColumn("Duração (min)", step=1),
-                    "obs": st.column_config.TextColumn("Observações"),
-                }
-            )
+        st.markdown("### Roteiro binaural")
+        df_rb = st.data_editor(
+            _norm_rb([]), num_rows="dynamic", use_container_width=True, hide_index=True,
+            key=K("biblioteca","novo_rb"),
+            column_config={
+                "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
+                "carrier_hz": st.column_config.NumberColumn("Carrier (Hz)", step=1.0),
+                "beat_hz": st.column_config.NumberColumn("Beat (Hz)", step=0.5),
+                "dur_min": st.column_config.NumberColumn("Duração (min)", step=1),
+                "obs": st.column_config.TextColumn("Observações"),
+            }
+        )
 
-            st.markdown("### Cama — etapas")
-            df_cama = st.data_editor(
-                _norm_cama([]), num_rows="dynamic", use_container_width=True, hide_index=True,
-                key=K("biblioteca","novo_cama"),
-                column_config={
-                    "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
-                    "chakra": st.column_config.SelectboxColumn("Chakra",
-                               options=["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]),
-                    "cor": st.column_config.TextColumn("Cor"),
-                    "min": st.column_config.NumberColumn("Minutos", min_value=1, step=1),
-                }
-            )
-            st.caption(f"Duração total prevista: **{int(pd.to_numeric(df_cama['min'], errors='coerce').fillna(0).sum())} min**")
+        st.markdown("### Cama — etapas")
+        df_cama = st.data_editor(
+            _norm_cama([]), num_rows="dynamic", use_container_width=True, hide_index=True,
+            key=K("biblioteca","novo_cama"),
+            column_config={
+                "ordem": st.column_config.NumberColumn("Ordem", min_value=1, step=1),
+                "chakra": st.column_config.SelectboxColumn(
+                    "Chakra",
+                    options=["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"]
+                ),
+                "cor": st.column_config.TextColumn("Cor"),
+                "min": st.column_config.NumberColumn("Minutos", min_value=1, step=1),
+            }
+        )
+        st.caption(
+            f"Duração total prevista: **{int(pd.to_numeric(df_cama['min'], errors='coerce').fillna(0).sum())} min**"
+        )
 
-            notas = st.text_area("Notas do template", key=K("biblioteca","novo_notas"))
+        notas = st.text_area("Notas do template", key=K("biblioteca","novo_notas"))
 
-            criar = st.form_submit_button("➕ Criar template", use_container_width=True)
-            if criar and sb:
-                nome_ok = (novo_nome or "").strip()
-                if not nome_ok:
-                    st.warning("Informe um **nome** para o template.")
-                    st.stop()
-                if nome_ok in nomes:
-                    st.error("Já existe um template com esse nome. Escolha outro.")
-                    st.stop()
-                payload = {
-                    "name": nome_ok,
-                    "objetivo": objetivo or None,
-                    "frequencias_suporte": _pack_freqs(df_freqs),
-                    "roteiro_binaural": _pack_rb(df_rb),
-                    # cria/atualiza um preset de cama exclusivo do template e usa o UUID no template
-                        cama_name = f"{nome_ok} — Cama"
-                        cama_id = _upsert_cama_preset_and_get_id(cama_name, df_cama)
-                        
-                        payload = {
-                            ...
-                            "cama_preset": cama_id,   # <<< AGORA É UUID
-                            ...
-                        }
+        criar = st.form_submit_button("➕ Criar template", use_container_width=True)
+        if criar and sb:
+            nome_ok = (novo_nome or "").strip()
+            if not nome_ok:
+                st.warning("Informe um **nome** para o template.")
+                st.stop()
+            if nome_ok in nomes:
+                st.error("Já existe um template com esse nome. Escolha outro.")
+                st.stop()
 
-                    "phyto_plan": None,
-                    "notas": (notas or None),
-                }
-                try:
-                    sb.table("therapy_templates").insert(payload).execute()
-                    st.success(f"Template **{nome_ok}** criado.")
-                    st.cache_data.clear()
-                except Exception as e:
-                    _api_err(e, "therapy_templates.insert")
+            # ✅ cria/atualiza um preset de cama exclusivo do template e usa o UUID no template
+            cama_name = f"{nome_ok} — Cama"
+            cama_id = _upsert_cama_preset_and_get_id(cama_name, df_cama)
+            if not cama_id:
+                st.error("Não foi possível criar/obter o preset da cama (cama_presets).")
+                st.stop()
+
+            payload = {
+                "name": nome_ok,
+                "objetivo": objetivo or None,
+                "frequencias_suporte": _pack_freqs(df_freqs),
+                "roteiro_binaural": _pack_rb(df_rb),
+                "cama_preset": cama_id,   # ✅ UUID
+                "phyto_plan": None,
+                "notas": (notas or None),
+            }
+
+            try:
+                sb.table("therapy_templates").insert(payload).execute()
+                st.success(f"Template **{nome_ok}** criado.")
+                st.cache_data.clear()
+            except Exception as e:
+                _api_err(e, "therapy_templates.insert")
+
 
     # ---------- EDITAR/CLONAR EXISTENTE ----------
     else:
