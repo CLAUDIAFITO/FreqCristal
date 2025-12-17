@@ -9,6 +9,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+import re
+
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+
+def _is_uuid(x):
+    s = str(x or "").strip()
+    return bool(_UUID_RE.match(s))
 
 # ----------------- ENV / SUPABASE -----------------
 load_dotenv()
@@ -1388,39 +1395,59 @@ with tabs[10]:
         dfX["ordem"] = range(1, len(dfX)+1)
         return dfX
 
-    def _norm_cama(cp):
-        # cp pode ser: string (nome do preset), dict {"etapas":[...]}, ou lista de etapas
-        etapas = []
-        if isinstance(cp, str) and cp.strip():
-            base = sb_select("cama_presets", "nome,etapas", order="nome")
-            cand = [x for x in (base or []) if (x.get("nome") or "").strip() == cp.strip()]
-            if cand:
-                etapas = cand[0].get("etapas") or []
-        elif isinstance(cp, dict):
-            etapas = cp.get("etapas") or []
-        elif isinstance(cp, list):
-            etapas = cp
+def _norm_cama(cp):
+    # cp pode ser: uuid (id do preset), string (nome), dict {"etapas":[...]}, ou lista de etapas
+    etapas = []
 
-        rows = []
-        for i, x in enumerate(etapas, start=1):
-            if isinstance(x, dict):
-                rows.append({
-                    "ordem": x.get("ordem", i),
-                    "chakra": (x.get("chakra") or ""),
-                    "cor": (x.get("cor") or ""),
-                    "min": int(x.get("min") or 5),
-                })
-            else:
-                rows.append({"ordem": i, "chakra":"", "cor":"", "min":5})
+    if isinstance(cp, str) and cp.strip():
+        s = cp.strip()
 
-        if not rows:
-            rows = [{"ordem":i, "chakra":v, "cor":"", "min":5} for i, v in enumerate(
-                ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"], start=1)]
-        dfX = pd.DataFrame(rows, columns=["ordem","chakra","cor","min"])
-        dfX["ordem"] = pd.to_numeric(dfX["ordem"], errors="coerce").fillna(0).astype(int)
-        dfX = dfX.sort_values("ordem").reset_index(drop=True)
-        dfX["ordem"] = range(1, len(dfX)+1)
-        return dfX
+        # 1) Se parece UUID: busca por id
+        if _is_uuid(s):
+            try:
+                row = sb.table("cama_presets").select("nome,etapas").eq("id", s).limit(1).execute().data
+                if row:
+                    etapas = row[0].get("etapas") or []
+            except Exception:
+                etapas = []
+
+        # 2) Senão: trata como nome
+        if not etapas:
+            try:
+                base = sb_select("cama_presets", "nome,etapas", order="nome")
+                cand = [x for x in (base or []) if (x.get("nome") or "").strip() == s]
+                if cand:
+                    etapas = cand[0].get("etapas") or []
+            except Exception:
+                etapas = []
+
+    elif isinstance(cp, dict):
+        etapas = cp.get("etapas") or []
+    elif isinstance(cp, list):
+        etapas = cp
+
+    rows = []
+    for i, x in enumerate(etapas, start=1):
+        if isinstance(x, dict):
+            rows.append({
+                "ordem": x.get("ordem", i),
+                "chakra": (x.get("chakra") or ""),
+                "cor": (x.get("cor") or ""),
+                "min": int(x.get("min") or 5),
+            })
+        else:
+            rows.append({"ordem": i, "chakra": "", "cor": "", "min": 5})
+
+    if not rows:
+        rows = [{"ordem":i, "chakra":v, "cor":"", "min":5} for i, v in enumerate(
+            ["raiz","sacral","plexo","cardiaco","laringeo","terceiro_olho","coronal"], start=1)]
+
+    dfX = pd.DataFrame(rows, columns=["ordem","chakra","cor","min"])
+    dfX["ordem"] = pd.to_numeric(dfX["ordem"], errors="coerce").fillna(0).astype(int)
+    dfX = dfX.sort_values("ordem").reset_index(drop=True)
+    dfX["ordem"] = range(1, len(dfX)+1)
+    return dfX
+
 
     def _pack_freqs(dfX):
         out = []
@@ -1475,6 +1502,38 @@ with tabs[10]:
         for i, x in enumerate(out, start=1): x["ordem"] = i
         return {"etapas": out}
 
+    def _upsert_cama_preset_and_get_id(preset_name: str, df_cama):
+        # monta etapas_json a partir do grid
+        etapas = []
+        if df_cama is not None and not df_cama.empty:
+            _d = df_cama.copy()
+            _d["ordem"] = pd.to_numeric(_d["ordem"], errors="coerce").fillna(0).astype(int)
+            _d = _d.sort_values("ordem").reset_index(drop=True)
+            _d["ordem"] = range(1, len(_d)+1)
+    
+            for _, r in _d.iterrows():
+                ch = str(r.get("chakra") or "").strip()
+                if not ch:
+                    continue
+                cr = str(r.get("cor") or "").strip() or None
+                mn = int(pd.to_numeric(r.get("min"), errors="coerce") or 5)
+                etapas.append({"ordem": int(r.get("ordem")), "chakra": ch, "cor": cr, "min": max(1, mn)})
+    
+        dur = int(sum(e["min"] for e in etapas)) if etapas else 0
+    
+        # upsert no cama_presets (precisa existir UNIQUE em nome; se não tiver, me avisa que ajusto)
+        sb.table("cama_presets").upsert({
+            "nome": preset_name,
+            "etapas": etapas,
+            "duracao_min": dur,
+            "notas": "Auto-gerado pelo template"
+        }).execute()
+    
+        # busca id do preset recém salvo
+        got = sb.table("cama_presets").select("id").eq("nome", preset_name).limit(1).execute().data
+        return (got[0].get("id") if got else None)
+
+              
     # --- carrega templates existentes ---
     tpls = sb_select(
         "therapy_templates",
@@ -1550,7 +1609,16 @@ with tabs[10]:
                     "objetivo": objetivo or None,
                     "frequencias_suporte": _pack_freqs(df_freqs),
                     "roteiro_binaural": _pack_rb(df_rb),
-                    "cama_preset": _pack_cama(df_cama),
+                    # cria/atualiza um preset de cama exclusivo do template e usa o UUID no template
+                        cama_name = f"{nome_ok} — Cama"
+                        cama_id = _upsert_cama_preset_and_get_id(cama_name, df_cama)
+                        
+                        payload = {
+                            ...
+                            "cama_preset": cama_id,   # <<< AGORA É UUID
+                            ...
+                        }
+
                     "phyto_plan": None,
                     "notas": (notas or None),
                 }
@@ -1619,6 +1687,23 @@ with tabs[10]:
         c1, c2 = st.columns(2)
         if c1.button("💾 Salvar alterações do template", use_container_width=True, key=K("biblioteca","save")) and sb:
             try:
+             # Atualiza (ou cria) o preset da cama vinculado a este template
+                    current_cama_id = t.get("cama_preset")
+                    if current_cama_id and _is_uuid(current_cama_id):
+                        # atualiza pelo nome do preset atual (ou cria um padrão)
+                        cama_name = f"{sel} — Cama"
+                    else:
+                        cama_name = f"{sel} — Cama"
+                    
+                    cama_id = _upsert_cama_preset_and_get_id(cama_name, df_cama)
+                    
+                    payload = {
+                    "frequencias_suporte": _pack_freqs(df_freqs),
+                    "roteiro_binaural": _pack_rb(df_rb),
+                    "cama_preset": cama_id,  # mantém vínculo correto
+                    "notas": (notas or None),
+                }
+
                 payload = {
                     "frequencias_suporte": _pack_freqs(df_freqs),
                     "roteiro_binaural": _pack_rb(df_rb),
