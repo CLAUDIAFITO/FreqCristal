@@ -1,39 +1,38 @@
 
-# Sistema de Frequências Terapêuticas — Cama de Cristal (Streamlit + Supabase)
+# claudiafito_v2 (enxuto)
 
-Projeto do zero para gerar **protocolos de frequências** para sessões de **cama de cristal**,
-com cadastro de pacientes e registro de sessões.
+Este projeto cria um app Streamlit com **1 aba**:
+- Cadastro/seleção de paciente
+- Anamnese pontuável (0–4)
+- Motor de regras: gera **Plano** (Binaural + Cama de Cristal + Fito + Cristais)
+- Cria automaticamente as **Sessões** no banco
 
-## Stack
-- **Frontend/App**: Streamlit
-- **Banco**: Postgres no **Supabase**
-- **ORM/Client**: `supabase-py`
-- **Auth**: Supabase Auth (email/senha ou magic link)
-- **Armazenamento**: tabelas no Postgres (RLS ativada)
+## 1) Banco (Supabase)
+1. Abra o **SQL Editor** no Supabase
+2. Rode: `db/schema.sql`
+3. Rode: `db/seed.sql`
 
-## Funcionalidades (MVP)
-- Catálogo de frequências (Solfeggio, Chakras, Cores).
-- Gerador de protocolo baseado em **intenção**, **chakra alvo**, **cor**, **tempo de sessão**.
-- Cadastro de **Pacientes**, **Sessões** e **Frequências da Sessão**.
-- Histórico de sessões por paciente.
-- Exportação do protocolo em **CSV** (e pronto para PDF posteriormente).
+## 2) Variáveis de ambiente / secrets
+O app usa `DATABASE_URL` (padrão do Postgres), exemplo:
 
-## Como rodar localmente
-1) Crie um projeto no **Supabase**. Copie `SUPABASE_URL` e `SUPABASE_ANON_KEY`.
-2) Crie as tabelas rodando o SQL de `supabase_schema.sql` e **ative o RLS** (já incluso no arquivo).
-3) (Opcional) Rode os *seeds* com `seed_frequencies.csv` usando o próprio app (página **Admin**) ou inserindo manualmente.
-4) Configure variáveis de ambiente:
-   ```bash
-   export SUPABASE_URL="https://xxxxx.supabase.co"
-   export SUPABASE_KEY="eyJhbGciOiJ..."
-   export SUPABASE_SERVICE_ROLE=""  # opcional, apenas se for necessário seed programático
-   ```
-5) Instale dependências e rode o app:
-   ```bash
-   pip install -r requirements.txt
-   streamlit run app.py
-   ```
+postgresql://USER:PASSWORD@HOST:5432/DBNAME
 
-## Deploy (Streamlit Cloud ou servidor próprio)
+No Streamlit Cloud, coloque em **Secrets**:
+```
+DATABASE_URL = "postgresql://..."
+```
+
+## 3) Rodar local
+```
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+## Aviso
+O sistema gera **sugestões de bem-estar**. Você sempre ajusta conforme:
+- contraindicações, alergias, medicamentos
+- sensibilidade a som/luz
+- julgamento terapêutico profissional
+
 - Defina as variáveis de ambiente `SUPABASE_URL` e `SUPABASE_KEY` no painel de deploy.
 - Garanta que o banco já está com o schema criado e RLS ativo.
