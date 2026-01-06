@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple, Any, Optional
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import numpy as np
 import io
 import wave
@@ -263,7 +264,94 @@ def synth_binaural_wav(carrier_hz: float, beat_hz: float, seconds: int = 20, sr:
     return bio.getvalue()
 
 # -------------------------
-# CRUD: patients/intakes/plans/sessions_nova
+# CRUD: patients/intakes/pla
+
+def webaudio_binaural_html(fc: float, beat: float, seconds: int=60,
+                           bg_data_url: str|None=None, bg_gain: float=0.12):
+    """Player binaural + música de fundo usando <audio> (estável)."""
+    bt = abs(float(beat))
+    fl = max(20.0, float(fc) - bt/2)
+    fr = float(fc) + bt/2
+    sec = int(max(5, seconds))
+    bg = json.dumps(bg_data_url) if bg_data_url else "null"
+    g  = float(bg_gain)
+
+    return f"""
+<div style="padding:.6rem;border:1px solid #eee;border-radius:10px;">
+  <b>Binaural</b> — L {fl:.2f} Hz • R {fr:.2f} Hz • {sec}s {'<span style="margin-left:6px;">🎵 fundo</span>' if bg_data_url else ''}<br/>
+  <button id="bplay">▶️ Tocar</button> <button id="bstop">⏹️ Parar</button>
+  <div style="font-size:.9rem;color:#666">Use fones · volume moderado</div>
+</div>
+<script>
+let ctx=null, l=null, r=null, gL=null, gR=null, merger=null, timer=null;
+let bgAudio=null, bgNode=null, bgGain=null;
+
+function cleanup(){{
+  try{{ if(l) l.stop(); if(r) r.stop(); }}catch(e){{}}
+  [l,r,gL,gR,merger].forEach(n=>{{ if(n) try{{ n.disconnect(); }}catch(_e){{}} }});
+  if(bgAudio){{ try{{ bgAudio.pause(); bgAudio.src=''; }}catch(_e){{}} bgAudio=null; }}
+  if(bgNode)  {{ try{{ bgNode.disconnect(); }}catch(_e){{}} bgNode=null; }}
+  if(bgGain)  {{ try{{ bgGain.disconnect(); }}catch(_e){{}} bgGain=null; }}
+  if(ctx)     {{ try{{ ctx.close(); }}catch(_e){{}} ctx=null; }}
+  if(timer) clearTimeout(timer);
+}}
+
+async function start(){{
+  if(ctx) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // --- Binaural (L/R) ---
+  l = ctx.createOscillator(); r = ctx.createOscillator();
+  l.type='sine'; r.type='sine';
+  l.frequency.value={fl:.6f}; r.frequency.value={fr:.6f};
+  gL = ctx.createGain(); gR = ctx.createGain();
+  gL.gain.value = 0.05; gR.gain.value = 0.05;
+  merger = ctx.createChannelMerger(2);
+  l.connect(gL).connect(merger,0,0); r.connect(gR).connect(merger,0,1);
+  merger.connect(ctx.destination);
+  l.start(); r.start();
+
+  // --- Música de fundo via <audio> ---
+  const bg = {bg};
+  if (bg) {{
+    try {{
+      bgAudio = new Audio(bg);
+      bgAudio.loop = true;
+      await bgAudio.play().catch(()=>{{ }});
+      bgNode = ctx.createMediaElementSource(bgAudio);
+      bgGain = ctx.createGain(); bgGain.gain.value = {g:.4f};
+
+      // Forçar MONO
+      const splitter = ctx.createChannelSplitter(2);
+      const mergerMono = ctx.createChannelMerger(2);
+      const gA = ctx.createGain(); gA.gain.value = 0.5;
+      const gB = ctx.createGain(); gB.gain.value = 0.5;
+
+      bgNode.connect(splitter);
+      splitter.connect(gA, 0);
+      splitter.connect(gB, 1);
+      gA.connect(mergerMono, 0, 0);
+      gB.connect(mergerMono, 0, 0);
+      mergerMono.connect(bgGain).connect(ctx.destination);
+      try {{ await bgAudio.play(); }} catch(e) {{ console.warn('Fundo não pôde iniciar:', e); }}
+    }} catch(e) {{
+      console.warn('Erro no fundo:', e);
+    }}
+  }}
+
+  timer = setTimeout(()=>stop(), {sec*1000});
+}}
+
+function stop(){{
+  cleanup();
+}}
+
+document.getElementById('bplay').onclick = start;
+document.getElementById('bstop').onclick  = stop;
+</script>
+"""
+
+ns/sessions_nova
 # -------------------------
 def list_patients():
     if BACKEND == "postgres":
@@ -408,6 +496,25 @@ with tabs[1]:
         bg_raw = bg_up.read()
         bg_name = bg_up.name
         st.audio(bg_raw)
+        # Player com botões Tocar/Parar (igual ao app antigo)
+        bg_data_url = None
+        try:
+            mime = getattr(bg_up, "type", None) or "audio/mpeg"
+            bg_data_url = f"data:{mime};base64,{base64.b64encode(bg_raw).decode('utf-8')}"
+        except Exception:
+            bg_data_url = None
+
+    # Renderiza o player WebAudio (binaural + fundo)
+    carrier_hz = float(st.session_state.get("binaural_carrier", 220.0))
+    beat_hz = float(st.session_state.get("binaural_beat", 10.0))
+    dur_min = int(st.session_state.get("binaural_dur_min", 15) or 15)
+    seconds = int(max(10, min(120, dur_min * 60)))  # limita para não ficar pesado no navegador
+
+    st.markdown("▶️ **Player (Tocar/Parar)** — binaural + fundo")
+    components.html(
+        webaudio_binaural_html(carrier_hz, beat_hz, seconds=seconds, bg_data_url=bg_data_url, bg_gain=float(bg_gain)),
+        height=110,
+    )
 
     st.markdown("🔔 Frequências auxiliares (Solfeggio + Chakras)")
     sol = load_frequencies("solfeggio")
