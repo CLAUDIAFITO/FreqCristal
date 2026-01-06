@@ -1,19 +1,22 @@
+# claudiafito_v2 — Atendimento + Binaural (como no app antigo)
+# Single-file Streamlit app (compatível com Python 3.9+)
+
 import os
 import json
 import base64
+import io
+import wave
 from datetime import date, timedelta
 from typing import Dict, List, Tuple, Any, Optional
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-import numpy as np
-import io
-import wave
 
-# -------------
+# -----------------------------
 # Config
-# -------------
+# -----------------------------
 st.set_page_config(page_title="claudiafito_v2", layout="wide")
 
 def _get_env_or_secret(key: str) -> Optional[str]:
@@ -33,9 +36,9 @@ if BACKEND == "none":
     st.error("Defina DATABASE_URL **OU** SUPABASE_URL + SUPABASE_KEY (preferencialmente SUPABASE_SERVICE_ROLE_KEY).")
     st.stop()
 
-# -------------
+# -----------------------------
 # DB helpers
-# -------------
+# -----------------------------
 if BACKEND == "postgres":
     import psycopg2
     import psycopg2.extras
@@ -60,13 +63,20 @@ if BACKEND == "postgres":
             conn.commit()
 
 else:
-    from supabase import create_client, Client
+    from supabase import create_client, Client  # pip install supabase
+
     sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    def sb_select(table: str, columns: str="*", eq: Dict[str, Any]=None, order: Optional[Tuple[str,bool]]=None, limit: Optional[int]=None):
+    def sb_select(
+        table: str,
+        columns: str = "*",
+        eq: Optional[Dict[str, Any]] = None,
+        order: Optional[Tuple[str, bool]] = None,
+        limit: Optional[int] = None,
+    ):
         q = sb.table(table).select(columns)
         if eq:
-            for k,v in eq.items():
+            for k, v in eq.items():
                 q = q.eq(k, v)
         if order:
             col, asc = order
@@ -81,17 +91,10 @@ else:
         data = res.data or []
         return data[0] if data else None
 
-    def sb_upsert(table: str, payload: Dict[str, Any], on_conflict: Optional[str]=None):
-        q = sb.table(table).upsert(payload)
-        if on_conflict:
-            q = q.on_conflict(on_conflict)
-        res = q.execute()
-        data = res.data or []
-        return data[0] if data else None
 
-# -------------
+# -----------------------------
 # Domain model (anamnese simples)
-# -------------
+# -----------------------------
 DOMAINS = ["sono", "ansiedade", "humor_baixo", "exaustao", "pertencimento", "tensao", "ruminacao"]
 
 QUESTIONS = [
@@ -130,6 +133,7 @@ DOMAIN_TO_PROTOCOL = {
 }
 BASE_PROTOCOL = "BASE – Aterramento + Regulação"
 
+
 def compute_scores(answers: Dict[str, int]) -> Dict[str, float]:
     sums = {d: 0.0 for d in DOMAINS}
     maxs = {d: 0.0 for d in DOMAINS}
@@ -141,8 +145,10 @@ def compute_scores(answers: Dict[str, int]) -> Dict[str, float]:
         maxs[d] += 4.0 * w
     return {d: round((sums[d] / maxs[d] * 100.0) if maxs[d] else 0.0, 1) for d in DOMAINS}
 
-def pick_focus(scores: Dict[str, float], top_n=3) -> List[Tuple[str, float]]:
+
+def pick_focus(scores: Dict[str, float], top_n: int = 3) -> List[Tuple[str, float]]:
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
 
 def sessions_from_scores(scores: Dict[str, float]) -> Tuple[int, int]:
     top = sorted(scores.values(), reverse=True)
@@ -154,22 +160,25 @@ def sessions_from_scores(scores: Dict[str, float]) -> Tuple[int, int]:
     cadence = 7 if max_score >= 80 else (10 if max_score >= 60 else 14)
     return qty, cadence
 
+
 def load_protocols() -> Dict[str, Dict[str, Any]]:
     if BACKEND == "postgres":
-        rows = qall("select name, domain, rules_json, content_json from public.protocol_library where active = true")
+        rows = qall("select name, domain, rules_json, content_json, active from public.protocol_library where active = true")
         return {r["name"]: {"name": r["name"], "domain": r["domain"], "rules": r["rules_json"], "content": r["content_json"]} for r in rows}
     rows = sb_select("protocol_library", columns="name,domain,rules_json,content_json,active", eq={"active": True}, order=("domain", True))
-    out = {}
+    out: Dict[str, Dict[str, Any]] = {}
     for r in rows:
         out[r["name"]] = {"name": r["name"], "domain": r["domain"], "rules": r.get("rules_json") or {}, "content": r.get("content_json") or {}}
     return out
+
 
 def load_binaural_presets() -> List[Dict[str, Any]]:
     if BACKEND == "postgres":
         return qall("select id, nome, carrier_hz, beat_hz, duracao_min, notas from public.binaural_presets order by nome")
     return sb_select("binaural_presets", columns="id,nome,carrier_hz,beat_hz,duracao_min,notas", order=("nome", True))
 
-def load_frequencies(tipo: Optional[str]=None) -> List[Dict[str, Any]]:
+
+def load_frequencies(tipo: Optional[str] = None) -> List[Dict[str, Any]]:
     if BACKEND == "postgres":
         if tipo:
             return qall("select code, nome, hz, tipo, chakra, cor, descricao from public.frequencies where tipo=%s order by code", (tipo,))
@@ -177,6 +186,7 @@ def load_frequencies(tipo: Optional[str]=None) -> List[Dict[str, Any]]:
     if tipo:
         return sb_select("frequencies", columns="code,nome,hz,tipo,chakra,cor,descricao", eq={"tipo": tipo}, order=("code", True))
     return sb_select("frequencies", columns="code,nome,hz,tipo,chakra,cor,descricao", order=("code", True))
+
 
 def select_protocols(scores: Dict[str, float], protocols: Dict[str, Dict[str, Any]]) -> List[str]:
     selected = [BASE_PROTOCOL] if BASE_PROTOCOL in protocols else []
@@ -189,27 +199,52 @@ def select_protocols(scores: Dict[str, float], protocols: Dict[str, Dict[str, An
         selected.insert(0, BASE_PROTOCOL)
     return selected
 
+
 def merge_plan(selected_names: List[str], protocols: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    chakras, emocoes, cristais, fito, alerts = [], [], [], [], []
+    chakras: List[Any] = []
+    emocoes: List[Any] = []
+    cristais: List[Any] = []
+    fito: List[Any] = []
+    alerts: List[Any] = []
+
     def add_unique(lst, item):
+        if item is None:
+            return
         if item not in lst:
             lst.append(item)
+
     for name in selected_names:
         c = protocols.get(name, {}).get("content", {}) or {}
-        for ch in c.get("chakras_foco", []): add_unique(chakras, ch)
-        for e in c.get("emocoes_foco", []): add_unique(emocoes, e)
+        for ch in c.get("chakras_foco", []):
+            add_unique(chakras, ch)
+        for e in c.get("emocoes_foco", []):
+            add_unique(emocoes, e)
         for cr in c.get("cristais", []):
-            if cr not in cristais: cristais.append(cr)
+            add_unique(cristais, cr)
         for f in c.get("fito", []):
-            if f not in fito: fito.append(f)
-        if c.get("alertas"): add_unique(alerts, c["alertas"])
-    return {"chakras_prioritarios": chakras,"emocoes_prioritarias": emocoes,"cristais_sugeridos": cristais,"fito_sugerida": fito,"alertas": alerts}
+            add_unique(fito, f)
+        if c.get("alertas"):
+            add_unique(alerts, c["alertas"])
+    return {
+        "chakras_prioritarios": chakras,
+        "emocoes_prioritarias": emocoes,
+        "cristais_sugeridos": cristais,
+        "fito_sugerida": fito,
+        "alertas": alerts,
+    }
 
-def build_session_scripts(qty: int, cadence_days: int, focus: List[Tuple[str, float]],
-                          selected_names: List[str], protocols: Dict[str, Dict[str, Any]],
-                          audio_block: Dict[str, Any], extra_freq_codes: List[str]) -> List[Dict[str, Any]]:
-    focus_domains = [d for d,_ in focus]
-    focus_cards = []
+
+def build_session_scripts(
+    qty: int,
+    cadence_days: int,
+    focus: List[Tuple[str, float]],
+    selected_names: List[str],
+    protocols: Dict[str, Dict[str, Any]],
+    audio_block: Dict[str, Any],
+    extra_freq_codes: List[str],
+) -> List[Dict[str, Any]]:
+    focus_domains = [d for d, _ in focus]
+    focus_cards: List[str] = []
     for dom in focus_domains:
         pname = DOMAIN_TO_PROTOCOL.get(dom)
         if pname and pname in selected_names and pname != BASE_PROTOCOL:
@@ -217,41 +252,80 @@ def build_session_scripts(qty: int, cadence_days: int, focus: List[Tuple[str, fl
     if not focus_cards:
         focus_cards = [n for n in selected_names if n != BASE_PROTOCOL][:1]
 
-    scripts = []
+    scripts: List[Dict[str, Any]] = []
     today = date.today()
-    for i in range(1, qty+1):
-        session_date = today + timedelta(days=cadence_days*(i-1))
-        focus_card = focus_cards[(i-1) % len(focus_cards)] if focus_cards else None
-        parts = []
+
+    for i in range(1, qty + 1):
+        session_date = today + timedelta(days=cadence_days * (i - 1))
+        focus_card = focus_cards[(i - 1) % len(focus_cards)] if focus_cards else None
+
+        parts: List[Dict[str, Any]] = []
         base = protocols.get(BASE_PROTOCOL, {}).get("content", {}) or {}
         if base:
-            parts.append({"card": BASE_PROTOCOL, "binaural": base.get("binaural"), "cama": base.get("cama_cristal"),
-                          "cristais": base.get("cristais"), "fito": base.get("fito"),
-                          "roteiro": base.get("roteiro_sessao")})
+            parts.append(
+                {
+                    "card": BASE_PROTOCOL,
+                    "binaural": base.get("binaural"),
+                    "cama": base.get("cama_cristal"),
+                    "cristais": base.get("cristais"),
+                    "fito": base.get("fito"),
+                    "roteiro": base.get("roteiro_sessao"),
+                }
+            )
 
         if focus_card:
             fc = protocols.get(focus_card, {}).get("content", {}) or {}
-            parts.append({"card": focus_card, "binaural": fc.get("binaural"), "cama": fc.get("cama_cristal"),
-                          "cristais": fc.get("cristais"), "fito": fc.get("fito"),
-                          "roteiro": fc.get("roteiro_sessao")})
+            parts.append(
+                {
+                    "card": focus_card,
+                    "binaural": fc.get("binaural"),
+                    "cama": fc.get("cama_cristal"),
+                    "cristais": fc.get("cristais"),
+                    "fito": fc.get("fito"),
+                    "roteiro": fc.get("roteiro_sessao"),
+                }
+            )
 
-        scripts.append({
-            "session_n": i,
-            "scheduled_date": str(session_date),
-            "status": "AGENDADA",
-            "audio": audio_block,
-            "frequencias": [{"code": c} for c in extra_freq_codes],
-            "parts": parts
-        })
+        scripts.append(
+            {
+                "session_n": i,
+                "scheduled_date": str(session_date),
+                "status": "AGENDADA",
+                "audio": audio_block,
+                "frequencias": [{"code": c} for c in extra_freq_codes],
+                "parts": parts,
+            }
+        )
     return scripts
 
+
 # -------------------------
-# WAV binaural (preview/download)
+# Binaural: utilitários iguais ao app antigo
 # -------------------------
+MAX_BG_MB = 12  # ~12MB (vira ~16MB base64)
+
+def bytes_to_data_url_safe(raw: Optional[bytes], filename: Optional[str], max_mb: int = MAX_BG_MB):
+    """Converte bytes em data URL, mas recusa arquivos grandes para evitar MessageSizeError no Streamlit."""
+    if not raw:
+        return None, None, None
+    size_mb = len(raw) / (1024 * 1024)
+    name = (filename or "").lower()
+    mime = "audio/mpeg"
+    if name.endswith(".wav"):
+        mime = "audio/wav"
+    elif name.endswith(".ogg") or name.endswith(".oga"):
+        mime = "audio/ogg"
+
+    if size_mb > max_mb:
+        return None, mime, f"Arquivo de {size_mb:.1f} MB excede o limite de {max_mb} MB para tocar embutido. Use arquivo menor."
+    b64 = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{b64}", mime, None
+
+
 def synth_binaural_wav(carrier_hz: float, beat_hz: float, seconds: int = 20, sr: int = 44100, amp: float = 0.2) -> bytes:
-    t = np.linspace(0, seconds, int(sr*seconds), endpoint=False)
-    l = np.sin(2*np.pi*(carrier_hz - beat_hz/2.0)*t)
-    r = np.sin(2*np.pi*(carrier_hz + beat_hz/2.0)*t)
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False)
+    l = np.sin(2 * np.pi * (carrier_hz - beat_hz / 2.0) * t)
+    r = np.sin(2 * np.pi * (carrier_hz + beat_hz / 2.0) * t)
     stereo = np.stack([l, r], axis=1) * float(amp)
     stereo_i16 = np.int16(np.clip(stereo, -1, 1) * 32767)
 
@@ -263,18 +337,21 @@ def synth_binaural_wav(carrier_hz: float, beat_hz: float, seconds: int = 20, sr:
         wf.writeframes(stereo_i16.tobytes())
     return bio.getvalue()
 
-# -------------------------
-# CRUD: patients/intakes/pla
 
-def webaudio_binaural_html(fc: float, beat: float, seconds: int=60,
-                           bg_data_url: str|None=None, bg_gain: float=0.12):
-    """Player binaural + música de fundo usando <audio> (estável)."""
+def webaudio_binaural_html(
+    fc: float,
+    beat: float,
+    seconds: int = 60,
+    bg_data_url: Optional[str] = None,
+    bg_gain: float = 0.12,
+):
+    """Player binaural + música de fundo usando <audio> + WebAudio (com botões Tocar/Parar)."""
     bt = abs(float(beat))
-    fl = max(20.0, float(fc) - bt/2)
-    fr = float(fc) + bt/2
+    fl = max(20.0, float(fc) - bt / 2)
+    fr = float(fc) + bt / 2
     sec = int(max(5, seconds))
     bg = json.dumps(bg_data_url) if bg_data_url else "null"
-    g  = float(bg_gain)
+    g = float(bg_gain)
 
     return f"""
 <div style="padding:.6rem;border:1px solid #eee;border-radius:10px;">
@@ -317,11 +394,10 @@ async function start(){{
     try {{
       bgAudio = new Audio(bg);
       bgAudio.loop = true;
-      await bgAudio.play().catch(()=>{{ }});
       bgNode = ctx.createMediaElementSource(bgAudio);
       bgGain = ctx.createGain(); bgGain.gain.value = {g:.4f};
 
-      // Forçar MONO
+      // Forçar MONO (evita “brigar” com L/R)
       const splitter = ctx.createChannelSplitter(2);
       const mergerMono = ctx.createChannelMerger(2);
       const gA = ctx.createGain(); gA.gain.value = 0.5;
@@ -333,6 +409,7 @@ async function start(){{
       gA.connect(mergerMono, 0, 0);
       gB.connect(mergerMono, 0, 0);
       mergerMono.connect(bgGain).connect(ctx.destination);
+
       try {{ await bgAudio.play(); }} catch(e) {{ console.warn('Fundo não pôde iniciar:', e); }}
     }} catch(e) {{
       console.warn('Erro no fundo:', e);
@@ -351,24 +428,43 @@ document.getElementById('bstop').onclick  = stop;
 </script>
 """
 
+
+# -------------------------
+# CRUD: patients/intakes/plans/sessions_nova
 # -------------------------
 def list_patients():
     if BACKEND == "postgres":
         return qall("select id, nome, nascimento from public.patients order by nome asc")
     return sb_select("patients", columns="id,nome,nascimento", order=("nome", True))
 
+
 def insert_patient(nome: str, telefone: str, email: str, nascimento, notas: str) -> str:
-    payload = {"nome": nome, "telefone": telefone or None, "email": email or None, "nascimento": str(nascimento) if nascimento else None, "notas": notas or None}
+    payload = {
+        "nome": nome,
+        "telefone": telefone or None,
+        "email": email or None,
+        "nascimento": str(nascimento) if nascimento else None,
+        "notas": notas or None,
+    }
     if BACKEND == "postgres":
-        row = qone("""insert into public.patients (nome, telefone, email, nascimento, notas)
-                      values (%s,%s,%s,%s,%s) returning id""",
-                   (nome, telefone or None, email or None, nascimento, notas or None))
+        row = qone(
+            """insert into public.patients (nome, telefone, email, nascimento, notas)
+               values (%s,%s,%s,%s,%s) returning id""",
+            (nome, telefone or None, email or None, nascimento, notas or None),
+        )
         return row["id"]
     row = sb_insert("patients", payload)
     return row["id"]
 
-def insert_intake(patient_id: str, complaint: str, answers: Dict[str, int], scores: Dict[str, float],
-                 flags: Dict[str, bool], notes: str) -> str:
+
+def insert_intake(
+    patient_id: str,
+    complaint: str,
+    answers: Dict[str, int],
+    scores: Dict[str, float],
+    flags: Dict[str, bool],
+    notes: str,
+) -> str:
     payload = {
         "patient_id": patient_id,
         "complaint": complaint or None,
@@ -378,19 +474,33 @@ def insert_intake(patient_id: str, complaint: str, answers: Dict[str, int], scor
         "notes": notes or None,
     }
     if BACKEND == "postgres":
-        row = qone("""insert into public.intakes (patient_id, complaint, answers_json, scores_json, flags_json, notes)
-                      values (%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s)
-                      returning id""",
-                   (patient_id, complaint, json.dumps(answers, ensure_ascii=False),
-                    json.dumps(scores, ensure_ascii=False),
-                    json.dumps(flags, ensure_ascii=False),
-                    notes))
+        row = qone(
+            """insert into public.intakes (patient_id, complaint, answers_json, scores_json, flags_json, notes)
+               values (%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s)
+               returning id""",
+            (
+                patient_id,
+                complaint or None,
+                json.dumps(answers, ensure_ascii=False),
+                json.dumps(scores, ensure_ascii=False),
+                json.dumps(flags, ensure_ascii=False),
+                notes or None,
+            ),
+        )
         return row["id"]
     row = sb_insert("intakes", payload)
     return row["id"]
 
-def insert_plan(patient_id: str, intake_id: str, focus: List[Tuple[str, float]], selected_names: List[str],
-                sessions_qty: int, cadence_days: int, plan_json: Dict[str, Any]) -> str:
+
+def insert_plan(
+    patient_id: str,
+    intake_id: str,
+    focus: List[Tuple[str, float]],
+    selected_names: List[str],
+    sessions_qty: int,
+    cadence_days: int,
+    plan_json: Dict[str, Any],
+) -> str:
     payload = {
         "intake_id": intake_id,
         "patient_id": patient_id,
@@ -401,17 +511,24 @@ def insert_plan(patient_id: str, intake_id: str, focus: List[Tuple[str, float]],
         "plan_json": plan_json,
     }
     if BACKEND == "postgres":
-        row = qone("""insert into public.plans (intake_id, patient_id, focus_json, selected_protocols, sessions_qty, cadence_days, plan_json)
-                      values (%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s::jsonb)
-                      returning id""",
-                   (intake_id, patient_id,
-                    json.dumps({"top": focus}, ensure_ascii=False),
-                    json.dumps(selected_names, ensure_ascii=False),
-                    sessions_qty, cadence_days,
-                    json.dumps(plan_json, ensure_ascii=False)))
+        row = qone(
+            """insert into public.plans (intake_id, patient_id, focus_json, selected_protocols, sessions_qty, cadence_days, plan_json)
+               values (%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s::jsonb)
+               returning id""",
+            (
+                intake_id,
+                patient_id,
+                json.dumps({"top": focus}, ensure_ascii=False),
+                json.dumps(selected_names, ensure_ascii=False),
+                sessions_qty,
+                cadence_days,
+                json.dumps(plan_json, ensure_ascii=False),
+            ),
+        )
         return row["id"]
     row = sb_insert("plans", payload)
     return row["id"]
+
 
 def insert_session_nova(plan_id: str, patient_id: str, session_n: int, scheduled_date_str: str, status: str, script: Dict[str, Any]):
     payload = {
@@ -423,29 +540,38 @@ def insert_session_nova(plan_id: str, patient_id: str, session_n: int, scheduled
         "script_json": script,
     }
     if BACKEND == "postgres":
-        qexec("""insert into public.sessions_nova (plan_id, patient_id, session_n, scheduled_date, status, script_json)
-                 values (%s,%s,%s,%s,%s,%s::jsonb)""",
-              (plan_id, patient_id, session_n, scheduled_date_str, status, json.dumps(script, ensure_ascii=False)))
+        qexec(
+            """insert into public.sessions_nova (plan_id, patient_id, session_n, scheduled_date, status, script_json)
+               values (%s,%s,%s,%s,%s,%s::jsonb)""",
+            (plan_id, patient_id, session_n, scheduled_date_str, status, json.dumps(script, ensure_ascii=False)),
+        )
     else:
         sb_insert("sessions_nova", payload)
 
+
 # -------------------------
-# UI
+# UI helpers
 # -------------------------
+def K(*parts: str) -> str:
+    return "__".join(parts)
+
 st.title("claudiafito_v2 — Atendimento + Binaural (como no app antigo)")
-st.caption("Inclui presets Gamma/Theta/Alpha/Delta, Solfeggio, Chakras e upload de música de fundo do computador.")
+st.caption("Inclui presets Gamma/Theta/Alpha/Delta, Solfeggio, Chakras, Tocar/Parar e upload de música de fundo do computador.")
 
 tabs = st.tabs(["Atendimento", "Binaural"])
 
-# Shared audio settings (igual o antigo)
+# Shared binaural settings
 st.session_state.setdefault("binaural_carrier", 220.0)
 st.session_state.setdefault("binaural_beat", 10.0)
-st.session_state.setdefault("binaural_dur_min", 15)
+st.session_state.setdefault("binaural_dur_s", 120)     # duração em SEGUNDOS (igual no app antigo)
 st.session_state.setdefault("binaural_bg_gain", 0.12)
 st.session_state.setdefault("extra_freq_codes", [])
 
+# -------------------------
+# TAB: BINAURAL
+# -------------------------
 with tabs[1]:
-    st.subheader("Binaural — player rápido")
+    st.subheader("Binaural — igual ao app antigo (Tocar/Parar + fundo)")
 
     band_map = {
         "Delta (1–4 Hz)": 3.0,
@@ -454,91 +580,127 @@ with tabs[1]:
         "Beta baixa (12–18 Hz)": 15.0,
         "Gamma (30–45 Hz)": 40.0,
     }
-    bcol1, bcol2 = st.columns([2,1])
-    faixa = bcol1.selectbox("Faixa de ondas (atalho)", list(band_map.keys()), index=2)
-    if bcol2.button("Aplicar faixa"):
+    bcol1, bcol2 = st.columns([2, 1])
+    faixa = bcol1.selectbox("Faixa de ondas (atalho)", list(band_map.keys()), index=2, key=K("binaural", "band"))
+    if bcol2.button("Aplicar faixa", key=K("binaural", "apply_band")):
         st.session_state["binaural_beat"] = float(band_map[faixa])
         st.success(f"Batida ajustada para {band_map[faixa]} Hz")
 
-    presets = load_binaural_presets()
-    mapa_pres = {p["nome"]: p for p in (presets or [])}
-    cols_top = st.columns([2,1])
-    preset_escolhido = cols_top[0].selectbox("Tratamento pré-definido (binaural_presets)", list(mapa_pres.keys()) or ["(nenhum)"])
-    if cols_top[1].button("Aplicar preset") and preset_escolhido in mapa_pres:
+    # Presets do banco
+    try:
+        presets = load_binaural_presets()
+    except Exception as e:
+        presets = []
+        st.warning(f"Não consegui ler binaural_presets: {e}")
+
+    mapa_pres = {p["nome"]: p for p in (presets or []) if p.get("nome")}
+    cols_top = st.columns([2, 1])
+    preset_names = list(mapa_pres.keys()) or ["(nenhum)"]
+    preset_escolhido = cols_top[0].selectbox("Tratamento pré-definido (binaural_presets)", preset_names, key=K("binaural", "preset"))
+    if cols_top[1].button("Aplicar preset", key=K("binaural", "apply_preset")) and preset_escolhido in mapa_pres:
         p = mapa_pres[preset_escolhido]
         st.session_state["binaural_carrier"] = float(p.get("carrier_hz") or 220.0)
         st.session_state["binaural_beat"] = float(p.get("beat_hz") or 10.0)
-        st.session_state["binaural_dur_min"] = int(p.get("duracao_min") or 15)
+        # no app antigo a duração era em segundos; aqui aceitamos duracao_min e convertemos:
+        dur_min = p.get("duracao_min")
+        if dur_min is not None:
+            st.session_state["binaural_dur_s"] = int(float(dur_min) * 60)
         st.success("Preset aplicado.")
 
     c1, c2, c3 = st.columns(3)
-    carrier = c1.number_input("Carrier (Hz)", 80.0, 600.0, float(st.session_state["binaural_carrier"]), 1.0)
-    beat = c2.number_input("Beat (Hz)", 0.5, 60.0, float(st.session_state["binaural_beat"]), 0.5)
-    dur = c3.number_input("Duração (min)", 1, 60, int(st.session_state["binaural_dur_min"]), 1)
+    carrier = c1.number_input("Carrier (Hz)", 50.0, 1000.0, float(st.session_state["binaural_carrier"]), 1.0, key=K("binaural", "carrier"))
+    beat = c2.number_input("Batida (Hz)", 0.5, 45.0, float(st.session_state["binaural_beat"]), 0.5, key=K("binaural", "beat"))
+    dur_s = int(c3.number_input("Duração (s)", 10, 3600, int(st.session_state["binaural_dur_s"]), 5, key=K("binaural", "dur_s")))
 
-    st.session_state["binaural_carrier"] = carrier
-    st.session_state["binaural_beat"] = beat
-    st.session_state["binaural_dur_min"] = dur
+    st.session_state["binaural_carrier"] = float(carrier)
+    st.session_state["binaural_beat"] = float(beat)
+    st.session_state["binaural_dur_s"] = int(dur_s)
 
-    l_hz = carrier - beat/2.0
-    r_hz = carrier + beat/2.0
-    st.info(f"Cálculo: L = {l_hz:.2f} Hz e R = {r_hz:.2f} Hz (beat ~ {beat:.2f} Hz)")
+    bt = abs(float(beat))
+    fL = max(20.0, float(carrier) - bt / 2.0)
+    fR = float(carrier) + bt / 2.0
+    mL, mR = st.columns(2)
+    mL.metric("Esquerdo (L)", f"{fL:.2f} Hz")
+    mR.metric("Direito (R)", f"{fR:.2f} Hz")
+
+    with st.expander("Como funciona?"):
+        st.markdown(
+            """
+**Binaural** = duas frequências **puras** diferentes em cada ouvido → o cérebro percebe a **diferença** como um tom de batida (**beat**).  
+**Cálculo:** `L = carrier − beat/2` e `R = carrier + beat/2`.  
+Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o cérebro tende a sincronizar em **~10 Hz**.
+"""
+        )
 
     st.markdown("🎵 Música de fundo (opcional) — do seu computador (como antes)")
-    bg_up = st.file_uploader("MP3/WAV/OGG (até 12MB)", type=["mp3","wav","ogg"])
-    bg_gain = st.slider("Volume do fundo", 0.0, 0.4, float(st.session_state["binaural_bg_gain"]), 0.01)
-    st.session_state["binaural_bg_gain"] = bg_gain
+    bg_up = st.file_uploader("MP3/WAV/OGG (até 12MB)", type=["mp3", "wav", "ogg"], key=K("binaural", "bg_file"))
+    bg_gain = st.slider("Volume do fundo", 0.0, 0.4, float(st.session_state["binaural_bg_gain"]), 0.01, key=K("binaural", "bg_gain"))
+    st.session_state["binaural_bg_gain"] = float(bg_gain)
 
-    bg_raw = None
-    bg_name = None
+    raw = None
+    filename = None
     if bg_up:
-        bg_raw = bg_up.read()
-        bg_name = bg_up.name
-        st.audio(bg_raw)
-        # Player com botões Tocar/Parar (igual ao app antigo)
-        bg_data_url = None
-        try:
-            mime = getattr(bg_up, "type", None) or "audio/mpeg"
-            bg_data_url = f"data:{mime};base64,{base64.b64encode(bg_raw).decode('utf-8')}"
-        except Exception:
-            bg_data_url = None
+        raw = bg_up.read()
+        filename = bg_up.name
+        st.audio(raw)  # prévia
 
-    # Renderiza o player WebAudio (binaural + fundo)
-    carrier_hz = float(st.session_state.get("binaural_carrier", 220.0))
-    beat_hz = float(st.session_state.get("binaural_beat", 10.0))
-    dur_min = int(st.session_state.get("binaural_dur_min", 15) or 15)
-    seconds = int(max(10, min(120, dur_min * 60)))  # limita para não ficar pesado no navegador
+    bg_url, _mime, err = bytes_to_data_url_safe(raw, filename) if raw else (None, None, None)
+    if err:
+        st.warning(f"⚠️ {err}")
 
     st.markdown("▶️ **Player (Tocar/Parar)** — binaural + fundo")
     components.html(
-        webaudio_binaural_html(carrier_hz, beat_hz, seconds=seconds, bg_data_url=bg_data_url, bg_gain=float(bg_gain)),
-        height=110,
+        webaudio_binaural_html(float(carrier), float(beat), seconds=int(dur_s), bg_data_url=bg_url, bg_gain=float(bg_gain)),
+        height=140,
     )
 
+    # Frequências extras (Solfeggio + Chakras)
     st.markdown("🔔 Frequências auxiliares (Solfeggio + Chakras)")
-    sol = load_frequencies("solfeggio")
-    chak = load_frequencies("chakra")
-    sol_opts = [f'{r["code"]} — {r.get("nome") or ""}'.strip() for r in sol]
-    chak_opts = [f'{r["code"]} — {r.get("nome") or ""}'.strip() for r in chak]
-    sol_map = {sol_opts[i]: sol[i]["code"] for i in range(len(sol_opts))}
-    chak_map = {chak_opts[i]: chak[i]["code"] for i in range(len(chak_opts))}
+    try:
+        sol = load_frequencies("solfeggio")
+        chak = load_frequencies("chakra")
+    except Exception as e:
+        sol, chak = [], []
+        st.warning(f"Não consegui ler frequencies: {e}")
+
+    def _opt(r):
+        code = str(r.get("code") or "").strip()
+        nome = str(r.get("nome") or "").strip()
+        hz = r.get("hz")
+        hz_s = f"{float(hz):.2f} Hz" if hz is not None else "—"
+        base = code if code else "(sem code)"
+        if nome:
+            base += f" — {nome}"
+        return f"{base} • {hz_s}"
+
+    sol_opts = [_opt(r) for r in sol]
+    chak_opts = [_opt(r) for r in chak]
+    sol_map = {sol_opts[i]: sol[i].get("code") for i in range(len(sol_opts))}
+    chak_map = {chak_opts[i]: chak[i].get("code") for i in range(len(chak_opts))}
+
     c4, c5 = st.columns(2)
-    sel_sol = c4.multiselect("Solfeggio", sol_opts, default=[])
-    sel_chak = c5.multiselect("Chakras", chak_opts, default=[])
-    extra_codes = [sol_map[x] for x in sel_sol] + [chak_map[x] for x in sel_chak]
-    custom_code = st.text_input("Custom code (opcional)", value="")
+    sel_sol = c4.multiselect("Solfeggio", sol_opts, default=[], key=K("binaural", "sol"))
+    sel_chak = c5.multiselect("Chakras", chak_opts, default=[], key=K("binaural", "chak"))
+
+    extra_codes = [sol_map[x] for x in sel_sol if sol_map.get(x)] + [chak_map[x] for x in sel_chak if chak_map.get(x)]
+    custom_code = st.text_input("Custom code (opcional)", value="", key=K("binaural", "custom_code"))
     if custom_code.strip():
         extra_codes.append(custom_code.strip().upper())
 
-    # dedupe preserve order
-    seen=set(); extra_codes=[c for c in extra_codes if not (c in seen or seen.add(c))]
+    # dedupe preserving order
+    seen = set()
+    extra_codes = [c for c in extra_codes if not (c in seen or seen.add(c))]
     st.session_state["extra_freq_codes"] = extra_codes
 
-    wav = synth_binaural_wav(float(carrier), float(beat), seconds=min(int(dur*60), 20), sr=44100, amp=0.2)
+    wav = synth_binaural_wav(float(carrier), float(beat), seconds=20, sr=44100, amp=0.2)
     st.audio(wav, format="audio/wav")
-    st.download_button("Baixar WAV (até 20s)", data=wav,
-                       file_name=f"binaural_{int(carrier)}_{beat:.1f}.wav",
-                       mime="audio/wav")
+    st.download_button(
+        "Baixar WAV (20s)",
+        data=wav,
+        file_name=f"binaural_{int(carrier)}_{beat:.1f}.wav",
+        mime="audio/wav",
+        key=K("binaural", "dl_wav"),
+    )
 
     with st.expander("Sugestões rápidas por objetivo"):
         st.markdown(
@@ -550,83 +712,100 @@ with tabs[1]:
             """
         )
 
+
+# -------------------------
+# TAB: ATENDIMENTO
+# -------------------------
 with tabs[0]:
-    st.subheader("Atendimento (gera plano + sessões_nova)")
+    st.subheader("Atendimento (gera plano + sessions_nova)")
 
     with st.sidebar:
         st.header("Paciente")
-        patients = list_patients()
-        # label includes nascimento to avoid duplicates
+        try:
+            patients = list_patients()
+        except Exception as e:
+            patients = []
+            st.error(f"Erro ao carregar patients: {e}")
+
         def lab(p):
             nasc = p.get("nascimento")
-            tail = str(p["id"])[-4:]
-            return f'{p["nome"]} — {nasc or "s/n"} — {tail}'
+            tail = str(p.get("id") or "")[-4:]
+            return f'{p.get("nome","(sem nome)")} — {nasc or "s/n"} — {tail}'
+
         labels = ["— Novo paciente —"] + [lab(p) for p in patients]
-        sel = st.selectbox("Selecionar", labels, index=0)
+        sel = st.selectbox("Selecionar", labels, index=0, key=K("pat", "sel"))
 
         if sel == "— Novo paciente —":
-            nome = st.text_input("Nome")
-            telefone = st.text_input("Telefone (opcional)")
-            email = st.text_input("E-mail (opcional)")
-            nascimento = st.date_input("Nascimento (opcional)", value=None)
-            pnotas = st.text_area("Notas (opcional)")
-            if st.button("Criar paciente", type="primary", use_container_width=True):
+            nome = st.text_input("Nome", key=K("pat", "nome"))
+            telefone = st.text_input("Telefone (opcional)", key=K("pat", "tel"))
+            email = st.text_input("E-mail (opcional)", key=K("pat", "email"))
+            nascimento = st.date_input("Nascimento (opcional)", value=None, key=K("pat", "nasc"))
+            pnotas = st.text_area("Notas (opcional)", key=K("pat", "notas"))
+            if st.button("Criar paciente", type="primary", use_container_width=True, key=K("pat", "create")):
                 if not nome.strip():
                     st.warning("Informe o nome.")
                 else:
-                    st.session_state["patient_id"] = insert_patient(nome.strip(), telefone.strip(), email.strip(), nascimento, pnotas.strip())
-                    st.success("Paciente criado!")
-                    st.rerun()
+                    try:
+                        st.session_state["patient_id"] = insert_patient(nome.strip(), telefone.strip(), email.strip(), nascimento, pnotas.strip())
+                        st.success("Paciente criado!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao criar paciente: {e}")
         else:
-            # map label -> id
             idx = labels.index(sel) - 1
-            st.session_state["patient_id"] = patients[idx]["id"]
+            st.session_state["patient_id"] = patients[idx]["id"] if idx >= 0 else None
 
     patient_id = st.session_state.get("patient_id")
     if not patient_id:
+        st.info("Selecione ou crie um paciente na sidebar.")
         st.stop()
 
-    col1, col2 = st.columns([2,1])
+    col1, col2 = st.columns([2, 1])
     with col1:
-        complaint = st.text_input("Queixa principal (curta)")
+        complaint = st.text_input("Queixa principal (curta)", key=K("att", "complaint"))
     with col2:
-        atend_date = st.date_input("Data", value=date.today())
+        atend_date = st.date_input("Data", value=date.today(), key=K("att", "date"))
 
     st.markdown("**Anamnese (0–4)**")
-    answers = {}
+    answers: Dict[str, int] = {}
     cols = st.columns(2)
     for i, q in enumerate(QUESTIONS):
         with cols[i % 2]:
-            answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=f'att_{q["id"]}')
+            answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=K("att", q["id"]))
 
     st.markdown("**Sinais de atenção**")
-    flags = {}
+    flags: Dict[str, bool] = {}
     fcols = st.columns(2)
     for i, f in enumerate(FLAGS):
         with fcols[i % 2]:
-            flags[f["id"]] = st.checkbox(f["label"], value=False, key=f'att_{f["id"]}')
+            flags[f["id"]] = st.checkbox(f["label"], value=False, key=K("att", f["id"]))
 
-    notes = st.text_area("Notas do terapeuta (opcional)", height=100)
+    notes = st.text_area("Notas do terapeuta (opcional)", height=100, key=K("att", "notes"))
 
     scores = compute_scores(answers)
     focus = pick_focus(scores, top_n=3)
     qty, cadence = sessions_from_scores(scores)
 
-    protocols = load_protocols()
+    try:
+        protocols = load_protocols()
+    except Exception as e:
+        protocols = {}
+        st.warning(f"Não consegui ler protocol_library: {e}")
+
     selected_names = select_protocols(scores, protocols)
     plan = merge_plan(selected_names, protocols)
 
+    # Audio block (salva no plano/sessões; música de fundo local não persiste)
     audio_block = {
         "binaural": {
             "carrier_hz": float(st.session_state["binaural_carrier"]),
             "beat_hz": float(st.session_state["binaural_beat"]),
-            "duracao_min": int(st.session_state["binaural_dur_min"]),
+            "duracao_s": int(st.session_state["binaural_dur_s"]),
         },
         "bg": {
-            "filename": None,  # arquivo local não persiste no banco
             "gain": float(st.session_state["binaural_bg_gain"]),
-            "note": "música de fundo é selecionada no computador (não é salva no banco)."
-        }
+            "note": "música de fundo é selecionada no computador (não é salva no banco).",
+        },
     }
     extra_freq_codes = st.session_state.get("extra_freq_codes") or []
 
@@ -642,38 +821,56 @@ with tabs[0]:
         st.write("Frequências extras:", extra_freq_codes)
     with right:
         st.write("Protocolos:", selected_names)
-        st.write("Plano:", plan)
+        st.write("Plano consolidado:", plan)
         st.write("Áudio (binaural):", audio_block["binaural"])
 
     st.subheader("Sessões pré-definidas")
-    st.dataframe(pd.DataFrame([{"sessao": s["session_n"], "data": s["scheduled_date"]} for s in scripts]),
-                 use_container_width=True, hide_index=True)
+    st.dataframe(
+        pd.DataFrame([{"sessao": s["session_n"], "data": s["scheduled_date"], "status": s["status"]} for s in scripts]),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     b1, b2 = st.columns(2)
     with b1:
-        if st.button("Salvar anamnese (intake)", use_container_width=True):
-            intake_id = insert_intake(patient_id, complaint, answers, scores, flags, notes)
-            st.session_state["last_intake_id"] = intake_id
-            st.success("Anamnese salva!")
-    with b2:
-        if st.button("Gerar plano + criar sessões (sessions_nova)", type="primary", use_container_width=True):
-            intake_id = st.session_state.get("last_intake_id")
-            if not intake_id:
+        if st.button("Salvar anamnese (intake)", use_container_width=True, key=K("att", "save_intake")):
+            try:
                 intake_id = insert_intake(patient_id, complaint, answers, scores, flags, notes)
                 st.session_state["last_intake_id"] = intake_id
+                st.success("Anamnese salva!")
+            except Exception as e:
+                st.error(f"Erro ao salvar anamnese: {e}")
 
-            plan_id = insert_plan(
-                patient_id=patient_id,
-                intake_id=intake_id,
-                focus=focus,
-                selected_names=selected_names,
-                sessions_qty=qty,
-                cadence_days=cadence,
-                plan_json={"date": str(atend_date), "complaint": complaint, "scores": scores,
-                           "focus": focus, "selected_protocols": selected_names,
-                           "plan": plan, "audio": audio_block, "frequencias": [{"code": c} for c in extra_freq_codes]},
-            )
-            for s in scripts:
-                insert_session_nova(plan_id, patient_id, int(s["session_n"]), s["scheduled_date"], s["status"], s)
+    with b2:
+        if st.button("Gerar plano + criar sessões (sessions_nova)", type="primary", use_container_width=True, key=K("att", "gen_plan")):
+            try:
+                intake_id = st.session_state.get("last_intake_id")
+                if not intake_id:
+                    intake_id = insert_intake(patient_id, complaint, answers, scores, flags, notes)
+                    st.session_state["last_intake_id"] = intake_id
 
-            st.success(f"Plano criado e sessões geradas em sessions_nova! plan_id={plan_id}")
+                plan_id = insert_plan(
+                    patient_id=patient_id,
+                    intake_id=intake_id,
+                    focus=focus,
+                    selected_names=selected_names,
+                    sessions_qty=qty,
+                    cadence_days=cadence,
+                    plan_json={
+                        "date": str(atend_date),
+                        "complaint": complaint,
+                        "scores": scores,
+                        "focus": focus,
+                        "selected_protocols": selected_names,
+                        "plan": plan,
+                        "audio": audio_block,
+                        "frequencias": [{"code": c} for c in extra_freq_codes],
+                    },
+                )
+                for s in scripts:
+                    insert_session_nova(plan_id, patient_id, int(s["session_n"]), s["scheduled_date"], s["status"], s)
+
+                st.success(f"Plano criado e sessões geradas em sessions_nova! plan_id={plan_id}")
+            except Exception as e:
+                st.error(f"Erro ao gerar plano/sessões: {e}")
+
