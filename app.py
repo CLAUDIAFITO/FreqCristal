@@ -1,8 +1,12 @@
 import os
+import io
 import json
+import wave
+import base64
 from datetime import date, timedelta
 from typing import Dict, List, Tuple, Any, Optional
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -11,6 +15,151 @@ import streamlit as st
 # 2) SUPABASE_URL + SUPABASE_KEY (ou SUPABASE_SERVICE_ROLE_KEY) -> Supabase REST (supabase-py)
 
 st.set_page_config(page_title="claudiafito_v2", layout="wide")
+
+# -------------------------
+# Keys únicas p/ widgets
+# -------------------------
+def K(*parts: str) -> str:
+    """Gera uma key única estável para widgets: K('aba','secao','campo')."""
+    return "k_" + "_".join(str(p).strip().lower().replace(" ", "_") for p in parts if p)
+
+# -------------------------
+# Áudio: helpers (binaural + fundo)
+# -------------------------
+
+# Limite p/ data-URL (evita erro de tamanho no Streamlit)
+MAX_BG_MB = 12  # ~12MB (vira ~16MB base64)
+
+def synth_binaural_wav(fc: float, beat: float, seconds: float = 20.0, sr: int = 44100, amp: float = 0.2) -> bytes:
+    """Gera um WAV estéreo com binaural (L/R) para download/preview rápido."""
+    bt = abs(float(beat))
+    fl = max(1.0, float(fc) - bt / 2)
+    fr = float(fc) + bt / 2
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False)
+    left = np.sin(2 * np.pi * fl * t)
+    right = np.sin(2 * np.pi * fr * t)
+    ramp = int(sr * 0.02)  # fade 20ms
+    if ramp > 0:
+        left[:ramp] *= np.linspace(0, 1, ramp)
+        right[:ramp] *= np.linspace(0, 1, ramp)
+        left[-ramp:] *= np.linspace(1, 0, ramp)
+        right[-ramp:] *= np.linspace(1, 0, ramp)
+    stereo = np.vstack([left, right]).T * float(amp)
+    y = np.int16(np.clip(stereo, -1, 1) * 32767)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(y.tobytes())
+    return buf.getvalue()
+
+def bytes_to_data_url_safe(raw: bytes, filename: Optional[str], max_mb: int = MAX_BG_MB):
+    """Converte bytes em data URL, mas recusa arquivos grandes para evitar erro de tamanho."""
+    if not raw:
+        return None, None, None
+    size_mb = len(raw) / (1024 * 1024)
+    name = (filename or "").lower()
+    mime = "audio/mpeg"
+    if name.endswith(".wav"):
+        mime = "audio/wav"
+    elif name.endswith(".ogg") or name.endswith(".oga"):
+        mime = "audio/ogg"
+
+    if size_mb > max_mb:
+        return None, mime, f"Arquivo de {size_mb:.1f} MB excede o limite de {max_mb} MB para tocar embutido. Use arquivo menor ou uma URL."
+    b64 = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{b64}", mime, None
+
+def webaudio_binaural_html(
+    fc: float,
+    beat: float,
+    seconds: int = 60,
+    bg_url: Optional[str] = None,
+    bg_gain: float = 0.12,
+    binaural_gain: float = 0.05,
+):
+    """Player binaural + música de fundo (opcional) via WebAudio + <audio>."""
+    bt = abs(float(beat))
+    fl = max(20.0, float(fc) - bt / 2)
+    fr = float(fc) + bt / 2
+    sec = int(max(5, seconds))
+    bg = json.dumps(bg_url) if bg_url else "null"
+    g_bg = float(bg_gain)
+    g_bin = float(max(0.0, min(0.2, binaural_gain)))
+
+    return f"""
+<div style="padding:.6rem;border:1px solid #eee;border-radius:10px;">
+  <b>Binaural</b> — L {fl:.2f} Hz • R {fr:.2f} Hz • {sec}s {'<span style="margin-left:6px;">🎵 fundo</span>' if bg_url else ''}<br/>
+  <button id="bplay">▶️ Tocar</button> <button id="bstop">⏹️ Parar</button>
+  <div style="font-size:.9rem;color:#666">Use fones · volume moderado</div>
+</div>
+<script>
+let ctx=null, l=null, r=null, gL=null, gR=null, merger=null, timer=null;
+let bgAudio=null, bgNode=null, bgGain=null;
+
+function cleanup(){{
+  try{{ if(l) l.stop(); if(r) r.stop(); }}catch(e){{}}
+  [l,r,gL,gR,merger].forEach(n=>{{ if(n) try{{ n.disconnect(); }}catch(_e){{}} }});
+  if(bgAudio){{ try{{ bgAudio.pause(); bgAudio.src=''; }}catch(_e){{}} bgAudio=null; }}
+  if(bgNode)  {{ try{{ bgNode.disconnect(); }}catch(_e){{}} bgNode=null; }}
+  if(bgGain)  {{ try{{ bgGain.disconnect(); }}catch(_e){{}} bgGain=null; }}
+  if(ctx)     {{ try{{ ctx.close(); }}catch(_e){{}} ctx=null; }}
+  if(timer) clearTimeout(timer);
+}}
+
+async function start(){{
+  if(ctx) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // --- Binaural (L/R) ---
+  l = ctx.createOscillator(); r = ctx.createOscillator();
+  l.type='sine'; r.type='sine';
+  l.frequency.value={fl:.6f}; r.frequency.value={fr:.6f};
+  gL = ctx.createGain(); gR = ctx.createGain();
+  gL.gain.value = {g_bin:.4f}; gR.gain.value = {g_bin:.4f};
+  merger = ctx.createChannelMerger(2);
+  l.connect(gL).connect(merger,0,0); r.connect(gR).connect(merger,0,1);
+  merger.connect(ctx.destination);
+  l.start(); r.start();
+
+  // --- Música de fundo via <audio> ---
+  const bg = {bg};
+  if (bg) {{
+    try {{
+      bgAudio = new Audio(bg);
+      bgAudio.loop = true;
+      await bgAudio.play().catch(()=>{{ }});
+      bgNode = ctx.createMediaElementSource(bgAudio);
+      bgGain = ctx.createGain(); bgGain.gain.value = {g_bg:.4f};
+
+      // Forçar MONO (para não competir com o L/R do binaural)
+      const splitter = ctx.createChannelSplitter(2);
+      const mergerMono = ctx.createChannelMerger(2);
+      const gA = ctx.createGain(); gA.gain.value = 0.5;
+      const gB = ctx.createGain(); gB.gain.value = 0.5;
+
+      bgNode.connect(splitter);
+      splitter.connect(gA, 0);
+      splitter.connect(gB, 1);
+      gA.connect(mergerMono, 0, 0);
+      gB.connect(mergerMono, 0, 0);
+      mergerMono.connect(bgGain).connect(ctx.destination);
+      try {{ await bgAudio.play(); }} catch(e) {{ console.warn('Fundo não pôde iniciar:', e); }}
+    }} catch(e) {{
+      console.warn('Erro no fundo:', e);
+    }}
+  }}
+
+  timer = setTimeout(()=>stop(), {sec*1000});
+}}
+
+function stop(){{ cleanup(); }}
+
+document.getElementById('bplay').onclick = start;
+document.getElementById('bstop').onclick  = stop;
+</script>
+"""
 
 # -------------------------
 # Config / Backend selection
@@ -25,9 +174,18 @@ def _get_env_or_secret(key: str) -> Optional[str]:
         pass
     return val or os.getenv(key)
 
+# Opcional (igual ao seu app antigo): se você preferir "hardcode" no arquivo,
+# preencha aqui (ou deixe vazio e use st.secrets/env no deploy).
+SUPABASE_URL_FALLBACK = ""
+SUPABASE_KEY_FALLBACK = ""
+
 DATABASE_URL = _get_env_or_secret("DATABASE_URL")
-SUPABASE_URL = _get_env_or_secret("SUPABASE_URL")
-SUPABASE_KEY = _get_env_or_secret("SUPABASE_SERVICE_ROLE_KEY") or _get_env_or_secret("SUPABASE_KEY")
+SUPABASE_URL = _get_env_or_secret("SUPABASE_URL") or (SUPABASE_URL_FALLBACK or None)
+SUPABASE_KEY = (
+    _get_env_or_secret("SUPABASE_SERVICE_ROLE_KEY")
+    or _get_env_or_secret("SUPABASE_KEY")
+    or (SUPABASE_KEY_FALLBACK or None)
+)
 
 BACKEND = "postgres" if DATABASE_URL else ("supabase" if (SUPABASE_URL and SUPABASE_KEY) else "none")
 
@@ -388,7 +546,7 @@ def insert_session_nova(plan_id: str, patient_id: str, session_n: int, scheduled
 # -------------------------
 # UI
 # -------------------------
-st.title("claudiafito_v2 — Atendimento (1 aba)")
+st.title("claudiafito_v2")
 if BACKEND == "postgres":
     st.caption("Backend: Postgres (DATABASE_URL).")
 else:
@@ -486,84 +644,198 @@ patient_id = st.session_state.get("patient_id")
 if not patient_id:
     st.stop()
 
-col1, col2 = st.columns([2, 1])
-with col1:
-    complaint = st.text_input("Queixa principal (curta)")
-with col2:
-    atend_date = st.date_input("Data", value=date.today())
+tab_atend, tab_binaural = st.tabs(["Atendimento", "Binaural"])
 
-st.subheader("Anamnese (0–4)")
-answers = {}
-cols = st.columns(2)
-for i, q in enumerate(QUESTIONS):
-    with cols[i % 2]:
-        answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=q["id"])
+with tab_atend:
+    st.subheader("Atendimento (anamnese → plano → sessões)")
 
-st.subheader("Sinais de atenção")
-flags = {}
-fcols = st.columns(2)
-for i, f in enumerate(FLAGS):
-    with fcols[i % 2]:
-        flags[f["id"]] = st.checkbox(f["label"], value=False, key=f["id"])
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        complaint = st.text_input("Queixa principal (curta)")
+    with col2:
+        atend_date = st.date_input("Data", value=date.today())
 
-notes = st.text_area("Notas do terapeuta (opcional)", height=100)
+    st.subheader("Anamnese (0–4)")
+    answers = {}
+    cols = st.columns(2)
+    for i, q in enumerate(QUESTIONS):
+        with cols[i % 2]:
+            answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=q["id"])
 
-scores = compute_scores(answers)
-focus = pick_focus(scores, top_n=3)
-qty, cadence = sessions_from_scores(scores)
+    st.subheader("Sinais de atenção")
+    flags = {}
+    fcols = st.columns(2)
+    for i, f in enumerate(FLAGS):
+        with fcols[i % 2]:
+            flags[f["id"]] = st.checkbox(f["label"], value=False, key=f["id"])
 
-protocols = load_protocols()
-selected_names = select_protocols(scores, protocols)
-plan = merge_plan(selected_names, protocols)
-audio_cfg = st.session_state.get("audio_cfg")
-scripts = build_session_scripts(qty, cadence, focus, selected_names, protocols, audio_cfg)
+    notes = st.text_area("Notas do terapeuta (opcional)", height=100)
 
-st.divider()
-left, right = st.columns(2)
-with left:
-    df = pd.DataFrame([{"dominio": k, "score": v} for k, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)])
-    st.dataframe(df, use_container_width=True, hide_index=True)
-    st.write("Foco:", focus)
-    st.write("Sessões sugeridas:", {"qty": qty, "cadence_days": cadence})
-with right:
-    st.write("Protocolos:", selected_names)
-    st.write("Plano:", plan)
+    scores = compute_scores(answers)
+    focus = pick_focus(scores, top_n=3)
+    qty, cadence = sessions_from_scores(scores)
 
-st.subheader("Sessões pré-definidas (gravará em sessions_nova)")
-st.dataframe(pd.DataFrame([{
-                "sessao": s["session_n"],
-                "data": s["scheduled_date"],
-                "binaural_device": (s.get("audio") or {}).get("binaural_device", {}).get("name") if (s.get("audio") or {}).get("binaural_device") else None,
-                "som_fundo": (s.get("audio") or {}).get("background_track", {}).get("name") if (s.get("audio") or {}).get("background_track") else None,
-            } for s in scripts]),
-             use_container_width=True, hide_index=True)
+    protocols = load_protocols()
+    selected_names = select_protocols(scores, protocols)
+    plan = merge_plan(selected_names, protocols)
+    audio_cfg = st.session_state.get("audio_cfg")
+    scripts = build_session_scripts(qty, cadence, focus, selected_names, protocols, audio_cfg)
 
-b1, b2 = st.columns(2)
-with b1:
-    if st.button("Salvar anamnese (intake)", use_container_width=True):
-        intake_id = insert_intake(patient_id, complaint, answers, scores, flags, notes)
-        st.session_state["last_intake_id"] = intake_id
-        st.success("Anamnese salva!")
+    st.divider()
+    left, right = st.columns(2)
+    with left:
+        df = pd.DataFrame([{"dominio": k, "score": v} for k, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)])
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.write("Foco:", focus)
+        st.write("Sessões sugeridas:", {"qty": qty, "cadence_days": cadence})
+    with right:
+        st.write("Protocolos:", selected_names)
+        st.write("Plano:", plan)
 
-with b2:
-    if st.button("Gerar plano + criar sessões", type="primary", use_container_width=True):
-        intake_id = st.session_state.get("last_intake_id")
-        if not intake_id:
+    st.subheader("Sessões pré-definidas (gravará em sessions_nova)")
+    st.dataframe(pd.DataFrame([{
+                    "sessao": s["session_n"],
+                    "data": s["scheduled_date"],
+                    "binaural_device": (s.get("audio") or {}).get("binaural_device", {}).get("name") if (s.get("audio") or {}).get("binaural_device") else None,
+                    "som_fundo": (s.get("audio") or {}).get("background_track", {}).get("name") if (s.get("audio") or {}).get("background_track") else None,
+                } for s in scripts]),
+                 use_container_width=True, hide_index=True)
+
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("Salvar anamnese (intake)", use_container_width=True):
             intake_id = insert_intake(patient_id, complaint, answers, scores, flags, notes)
             st.session_state["last_intake_id"] = intake_id
+            st.success("Anamnese salva!")
 
-        plan_id = insert_plan(
-            patient_id=patient_id,
-            intake_id=intake_id,
-            focus=focus,
-            selected_names=selected_names,
-            sessions_qty=qty,
-            cadence_days=cadence,
-            plan_json={"date": str(atend_date), "complaint": complaint, "scores": scores, "focus": focus,
-                      "selected_protocols": selected_names, "plan": plan, "audio_cfg": audio_cfg},
+    with b2:
+        if st.button("Gerar plano + criar sessões", type="primary", use_container_width=True):
+            intake_id = st.session_state.get("last_intake_id")
+            if not intake_id:
+                intake_id = insert_intake(patient_id, complaint, answers, scores, flags, notes)
+                st.session_state["last_intake_id"] = intake_id
+
+            plan_id = insert_plan(
+                patient_id=patient_id,
+                intake_id=intake_id,
+                focus=focus,
+                selected_names=selected_names,
+                sessions_qty=qty,
+                cadence_days=cadence,
+                plan_json={"date": str(atend_date), "complaint": complaint, "scores": scores, "focus": focus,
+                          "selected_protocols": selected_names, "plan": plan, "audio_cfg": audio_cfg},
+            )
+
+            for s in scripts:
+                insert_session_nova(plan_id, patient_id, int(s["session_n"]), s["scheduled_date"], s["status"], s)
+
+            st.success(f"Plano criado e sessões geradas em sessions_nova! plan_id={plan_id}")
+
+with tab_binaural:
+    st.subheader("Binaural (igual ao app antigo)")
+
+    audio_cfg = st.session_state.get("audio_cfg") or {}
+    dev = audio_cfg.get("binaural_device")
+    bg = audio_cfg.get("background_track")
+    mix = audio_cfg.get("mix") or {}
+
+    if dev:
+        st.caption(f"🎧 Dispositivo selecionado (sidebar): **{dev.get('name')}** ({dev.get('connection') or '-'})")
+    else:
+        st.caption("🎧 Selecione um dispositivo binaural (fone) na sidebar, se quiser registrar no atendimento.")
+
+    # controles (mesma UI do antigo)
+    c1, c2, c3 = st.columns(3)
+    carrier = c1.number_input("Carrier (Hz)", 50.0, 1000.0,
+                              float(st.session_state.get(K("binaural", "carrier"), 220.0)),
+                              1.0, key=K("binaural", "carrier"))
+    beat = c2.number_input("Batida (Hz)", 0.5, 45.0,
+                           float(st.session_state.get(K("binaural", "beat"), 10.0)),
+                           0.5, key=K("binaural", "beat"))
+    dur = int(c3.number_input("Duração (s)", 10, 3600,
+                              int(st.session_state.get(K("binaural", "dur"), 120)),
+                              5, key=K("binaural", "dur")))
+
+    bt = abs(float(beat))
+    fL = max(20.0, float(carrier) - bt / 2.0)
+    fR = float(carrier) + bt / 2.0
+    mL, mR = st.columns(2)
+    mL.metric("Esquerdo (L)", f"{fL:.2f} Hz")
+    mR.metric("Direito (R)", f"{fR:.2f} Hz")
+
+    with st.expander("Como funciona?"):
+        st.markdown(
+            """
+**Binaural** = duas frequências **puras** diferentes em cada ouvido → o cérebro percebe a **diferença** como um tom de batida (**beat**).  
+**Cálculo:** `L = carrier − beat/2` e `R = carrier + beat/2`.  
+Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ batida percebida **~10 Hz**.
+
+**Faixas úteis (guia rápido):**
+- **Delta** (1–4 Hz): sono profundo, reparo  
+- **Theta** (4–8 Hz): introspecção/relaxamento  
+- **Alpha** (8–12 Hz): foco calmo  
+- **Beta baixa** (12–18 Hz): atenção/alerta leve  
+- **Gamma** (30–45 Hz): estimulação breve  
+            """
         )
 
-        for s in scripts:
-            insert_session_nova(plan_id, patient_id, int(s["session_n"]), s["scheduled_date"], s["status"], s)
+    st.markdown("🎵 Música de fundo (opcional)")
+    st.caption("Você pode usar a trilha da sidebar (URL) ou enviar um arquivo (até 12MB).")
+    bg_up = st.file_uploader("MP3/WAV/OGG (até 12MB)", type=["mp3", "wav", "ogg"], key=K("binaural", "bg_file"))
 
-        st.success(f"Plano criado e sessões geradas em sessions_nova! plan_id={plan_id}")
+    # ganhos (0..0.4), com defaults parecidos com o app antigo
+    def _vol_to_gain(v: int, scale: float) -> float:
+        try:
+            return float(max(0.0, min(0.4, float(v) / scale)))
+        except Exception:
+            return 0.12
+
+    bg_gain_default = _vol_to_gain(int(mix.get("background_volume") or 25), 200.0)
+    bin_gain_default = float(max(0.01, min(0.2, float(int(mix.get("binaural_volume") or 60)) / 1200.0)))
+
+    bg_gain = st.slider("Volume do fundo", 0.0, 0.4, float(st.session_state.get(K("binaural", "bg_gain"), bg_gain_default)), 0.01, key=K("binaural", "bg_gain"))
+    bin_gain = st.slider("Volume do binaural", 0.01, 0.2, float(st.session_state.get(K("binaural", "bin_gain"), bin_gain_default)), 0.01, key=K("binaural", "bin_gain"))
+
+    raw = None
+    filename = None
+    if bg_up:
+        raw = bg_up.read()
+        filename = bg_up.name
+        st.audio(raw)  # prévia
+
+    bg_url = None
+    if raw:
+        data_url, _mime, err = bytes_to_data_url_safe(raw, filename)
+        if err:
+            st.warning(f"⚠️ {err}")
+        else:
+            bg_url = data_url
+    elif bg and (bg.get("url") or "").strip():
+        bg_url = bg.get("url")
+
+    st.components.v1.html(
+        webaudio_binaural_html(carrier, beat, dur, bg_url, bg_gain, bin_gain),
+        height=300
+    )
+
+    wav = synth_binaural_wav(carrier, beat, seconds=min(float(dur), 20.0), sr=44100, amp=0.2)
+    st.audio(wav, format="audio/wav")
+    st.download_button(
+        "Baixar WAV (20s)",
+        data=wav,
+        file_name=f"binaural_{int(carrier)}_{float(beat):.1f}.wav",
+        mime="audio/wav",
+        key=K("binaural", "dl_wav")
+    )
+
+    with st.expander("Sugestões rápidas por objetivo"):
+        st.markdown(
+            """
+- **Relaxar/ansiedade** → **Theta 5–6 Hz** (15–20 min) e fechar em **Alpha 10 Hz** (5–10 min).
+- **Sono** → **Delta 2–3 Hz** (10–20 min) → **Theta 5–6 Hz** (10–15 min).
+- **Foco calmo** → **Alpha 10 Hz** (10–15 min).
+- **Gamma 40 Hz** → estimulação breve (5–12 min), volume baixo.
+
+> Use com fones, volume moderado. Se houver desconforto (tontura/dor de cabeça), reduza volume ou pare.
+            """
+        )
