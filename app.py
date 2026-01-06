@@ -200,7 +200,7 @@ def insert_plan_and_sessions(patient_id: str, intake_id: str, focus, selected_na
     plan_id = row["id"]
 
     for s in scripts:
-        qexec("""insert into public.sessions (plan_id, patient_id, session_n, scheduled_date, status, script_json)
+        qexec("""insert into public.sessions_nova (plan_id, patient_id, session_n, scheduled_date, status, script_json)
                  values (%s,%s,%s,%s,%s,%s::jsonb)""",
               (plan_id, patient_id, int(s["session_n"]), s["scheduled_date"], s["status"],
                json.dumps(s, ensure_ascii=False)))
