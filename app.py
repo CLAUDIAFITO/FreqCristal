@@ -351,7 +351,6 @@ document.getElementById('bstop').onclick  = stop;
 </script>
 """
 
-ns/sessions_nova
 # -------------------------
 def list_patients():
     if BACKEND == "postgres":
