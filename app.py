@@ -211,7 +211,8 @@ def merge_plan(selected_names: List[str], protocols: Dict[str, Dict[str, Any]]) 
     }
 
 def build_session_scripts(qty: int, cadence_days: int, focus: List[Tuple[str, float]],
-                          selected_names: List[str], protocols: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+                          selected_names: List[str], protocols: Dict[str, Dict[str, Any]],
+                          audio_cfg: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     focus_domains = [d for d, _ in focus]
     focus_cards = []
     for dom in focus_domains:
@@ -261,6 +262,48 @@ def build_session_scripts(qty: int, cadence_days: int, focus: List[Tuple[str, fl
 # -------------------------
 # CRUD (patients existente + sessions_nova)
 # -------------------------
+
+# -------------------------
+# CRUD: Áudio (dispositivos + som de fundo)
+# -------------------------
+def list_audio_devices(kind: str):
+    if BACKEND == "postgres":
+        return qall("select id, name, kind, connection from public.audio_devices where active=true and kind=%s order by name asc", (kind,))
+    else:
+        return sb_select("audio_devices", columns="id,name,kind,connection,active", eq={"active": True, "kind": kind}, order=("name", True))
+
+def list_background_tracks():
+    if BACKEND == "postgres":
+        return qall("select id, name, category, url from public.background_tracks where active=true order by name asc")
+    else:
+        return sb_select("background_tracks", columns="id,name,category,url,active", eq={"active": True}, order=("name", True))
+
+def insert_audio_device(name: str, kind: str, connection: str, notes: str = ""):
+    payload = {"name": name, "kind": kind, "connection": connection or None, "notes": notes or None, "active": True}
+    if BACKEND == "postgres":
+        row = qone("""insert into public.audio_devices (name, kind, connection, notes, active)
+                      values (%s,%s,%s,%s,true)
+                      on conflict (name) do update set kind=excluded.kind, connection=excluded.connection, notes=excluded.notes, active=true
+                      returning id""",
+                   (name, kind, connection or None, notes or None))
+        return row["id"]
+    else:
+        # supabase REST: upsert by name is not trivial without RPC; we'll try insert and let it error if duplicate
+        row = sb_insert("audio_devices", payload)
+        return row["id"]
+
+def insert_background_track(name: str, category: str, url: str, notes: str = ""):
+    payload = {"name": name, "category": category or None, "url": url or None, "notes": notes or None, "active": True}
+    if BACKEND == "postgres":
+        row = qone("""insert into public.background_tracks (name, category, url, notes, active)
+                      values (%s,%s,%s,%s,true)
+                      on conflict (name) do update set category=excluded.category, url=excluded.url, notes=excluded.notes, active=true
+                      returning id""",
+                   (name, category or None, url or None, notes or None))
+        return row["id"]
+    else:
+        row = sb_insert("background_tracks", payload)
+        return row["id"]
 def list_patients():
     if BACKEND == "postgres":
         return qall("select id, nome from public.patients order by nome asc")
@@ -373,6 +416,72 @@ with st.sidebar:
     else:
         st.session_state["patient_id"] = next(p["id"] for p in patients if p["nome"] == sel)
 
+    st.divider()
+    st.header("Áudio")
+    binaural_devices = list_audio_devices("BINAURAL")
+    bg_tracks = list_background_tracks()
+
+    bd_labels = ["— Selecionar —"] + [f'{d["name"]} ({d.get("connection") or "-"})' for d in binaural_devices]
+    bt_labels = ["— Nenhum —"] + [f'{t["name"]} [{t.get("category") or "-"}]' for t in bg_tracks]
+
+    bd_sel = st.selectbox("Dispositivo binaural (fone)", bd_labels, index=1 if len(bd_labels)>1 else 0)
+    bt_sel = st.selectbox("Som de fundo (opcional)", bt_labels, index=0)
+
+    bin_vol = st.slider("Volume binaural (sugestão)", 0, 100, 60)
+    bg_vol = st.slider("Volume som de fundo (sugestão)", 0, 100, 25)
+
+    # resolve ids
+    binaural_device = None
+    if bd_sel != "— Selecionar —" and binaural_devices:
+        idx = bd_labels.index(bd_sel) - 1
+        if idx >= 0:
+            binaural_device = binaural_devices[idx]
+
+    bg_track = None
+    if bt_sel != "— Nenhum —" and bg_tracks:
+        idx = bt_labels.index(bt_sel) - 1
+        if idx >= 0:
+            bg_track = bg_tracks[idx]
+
+    st.session_state["audio_cfg"] = {
+        "binaural_device": binaural_device,
+        "background_track": bg_track,
+        "mix": {"binaural_volume": bin_vol, "background_volume": bg_vol},
+    }
+
+    with st.expander("➕ Cadastrar dispositivo / trilha"):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Novo dispositivo**")
+            nd_name = st.text_input("Nome do dispositivo", key="nd_name")
+            nd_kind = st.selectbox("Tipo", ["BINAURAL", "BACKGROUND", "MIXER"], key="nd_kind")
+            nd_conn = st.text_input("Conexão (P2/BT/USB)", key="nd_conn")
+            nd_notes = st.text_input("Notas (opcional)", key="nd_notes")
+            if st.button("Salvar dispositivo", key="save_dev"):
+                if nd_name.strip():
+                    insert_audio_device(nd_name.strip(), nd_kind, nd_conn.strip(), nd_notes.strip())
+                    st.success("Dispositivo salvo!")
+                    st.rerun()
+                else:
+                    st.warning("Informe o nome do dispositivo.")
+        with c2:
+            st.markdown("**Nova trilha de fundo**")
+            nt_name = st.text_input("Nome da trilha", key="nt_name")
+            nt_cat = st.text_input("Categoria (nature/noise/ambient)", key="nt_cat")
+            nt_url = st.text_input("URL (opcional, mp3/stream)", key="nt_url")
+            nt_notes = st.text_input("Notas (opcional)", key="nt_notes")
+            if st.button("Salvar trilha", key="save_track"):
+                if nt_name.strip():
+                    insert_background_track(nt_name.strip(), nt_cat.strip(), nt_url.strip(), nt_notes.strip())
+                    st.success("Trilha salva!")
+                    st.rerun()
+                else:
+                    st.warning("Informe o nome da trilha.")
+
+    if bg_track and (bg_track.get("url") or "").strip():
+        st.caption("Prévia do som de fundo:")
+        st.audio(bg_track["url"])
+
 patient_id = st.session_state.get("patient_id")
 if not patient_id:
     st.stop()
@@ -406,7 +515,8 @@ qty, cadence = sessions_from_scores(scores)
 protocols = load_protocols()
 selected_names = select_protocols(scores, protocols)
 plan = merge_plan(selected_names, protocols)
-scripts = build_session_scripts(qty, cadence, focus, selected_names, protocols)
+audio_cfg = st.session_state.get("audio_cfg")
+scripts = build_session_scripts(qty, cadence, focus, selected_names, protocols, audio_cfg)
 
 st.divider()
 left, right = st.columns(2)
@@ -420,7 +530,12 @@ with right:
     st.write("Plano:", plan)
 
 st.subheader("Sessões pré-definidas (gravará em sessions_nova)")
-st.dataframe(pd.DataFrame([{"sessao": s["session_n"], "data": s["scheduled_date"]} for s in scripts]),
+st.dataframe(pd.DataFrame([{
+                "sessao": s["session_n"],
+                "data": s["scheduled_date"],
+                "binaural_device": (s.get("audio") or {}).get("binaural_device", {}).get("name") if (s.get("audio") or {}).get("binaural_device") else None,
+                "som_fundo": (s.get("audio") or {}).get("background_track", {}).get("name") if (s.get("audio") or {}).get("background_track") else None,
+            } for s in scripts]),
              use_container_width=True, hide_index=True)
 
 b1, b2 = st.columns(2)
@@ -445,7 +560,7 @@ with b2:
             sessions_qty=qty,
             cadence_days=cadence,
             plan_json={"date": str(atend_date), "complaint": complaint, "scores": scores, "focus": focus,
-                      "selected_protocols": selected_names, "plan": plan},
+                      "selected_protocols": selected_names, "plan": plan, "audio_cfg": audio_cfg},
         )
 
         for s in scripts:
