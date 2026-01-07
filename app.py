@@ -344,6 +344,7 @@ def webaudio_binaural_html(
     seconds: int = 60,
     bg_data_url: Optional[str] = None,
     bg_gain: float = 0.12,
+    binaural_gain: float = 0.20,
 ):
     """Player binaural + música de fundo usando <audio> + WebAudio (com botões Tocar/Parar)."""
     bt = abs(float(beat))
@@ -352,6 +353,7 @@ def webaudio_binaural_html(
     sec = int(max(5, seconds))
     bg = json.dumps(bg_data_url) if bg_data_url else "null"
     g = float(bg_gain)
+    tg = float(binaural_gain)
 
     return f"""
 <div style=\"padding:.6rem;border:1px solid #eee;border-radius:10px;\">
@@ -360,12 +362,12 @@ def webaudio_binaural_html(
   <div style=\"font-size:.9rem;color:#666\">Use fones · volume moderado</div>
 </div>
 <script>
-let ctx=null, l=null, r=null, gL=null, gR=null, merger=null, timer=null;
+let ctx=null, l=null, r=null, gL=null, gR=null, merger=null, bus=null, limiter=null, timer=null;
 let bgAudio=null, bgNode=null, bgGain=null;
 
 function cleanup(){{
   try{{ if(l) l.stop(); if(r) r.stop(); }}catch(e){{}}
-  [l,r,gL,gR,merger].forEach(n=>{{ if(n) try{{ n.disconnect(); }}catch(_e){{}} }});
+  [l,r,gL,gR,merger,bus,limiter].forEach(n=>{{ if(n) try{{ n.disconnect(); }}catch(_e){{}} }});
   if(bgAudio){{ try{{ bgAudio.pause(); bgAudio.src=''; }}catch(_e){{}} bgAudio=null; }}
   if(bgNode)  {{ try{{ bgNode.disconnect(); }}catch(_e){{}} bgNode=null; }}
   if(bgGain)  {{ try{{ bgGain.disconnect(); }}catch(_e){{}} bgGain=null; }}
@@ -377,15 +379,24 @@ async function start(){{
   if(ctx) return;
   ctx = new (window.AudioContext || window.webkitAudioContext)();
 
+  // --- BUS + LIMITER (volume mais alto e seguro) ---
+  bus = ctx.createGain(); bus.gain.value = 1.0;
+  limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -10; limiter.knee.value = 0; limiter.ratio.value = 20;
+  limiter.attack.value = 0.003; limiter.release.value = 0.25;
+  bus.connect(limiter).connect(ctx.destination);
+
   // --- Binaural (L/R) ---
   l = ctx.createOscillator(); r = ctx.createOscillator();
   l.type='sine'; r.type='sine';
   l.frequency.value={fl:.6f}; r.frequency.value={fr:.6f};
   gL = ctx.createGain(); gR = ctx.createGain();
-  gL.gain.value = 0.05; gR.gain.value = 0.05;
+  // ganho do binaural (ajustável no app)
+  gL.gain.value = {tg:.4f}; gR.gain.value = {tg:.4f};
   merger = ctx.createChannelMerger(2);
   l.connect(gL).connect(merger,0,0); r.connect(gR).connect(merger,0,1);
-  merger.connect(ctx.destination);
+  // mistura no BUS (passa pelo limiter)
+  merger.connect(bus);
   l.start(); r.start();
 
   // --- Música de fundo via <audio> ---
@@ -408,7 +419,7 @@ async function start(){{
       splitter.connect(gB, 1);
       gA.connect(mergerMono, 0, 0);
       gB.connect(mergerMono, 0, 0);
-      mergerMono.connect(bgGain).connect(ctx.destination);
+      mergerMono.connect(bgGain).connect(bus);
 
       try {{ await bgAudio.play(); }} catch(e) {{ console.warn('Fundo não pôde iniciar:', e); }}
     }} catch(e) {{
@@ -560,6 +571,7 @@ KEY_CARRIER = K("binaural", "carrier")
 KEY_BEAT    = K("binaural", "beat")
 KEY_DUR_S   = K("binaural", "dur_s")
 KEY_BG_GAIN = K("binaural", "bg_gain")
+KEY_TONE_GAIN = K("binaural", "tone_gain")
 
 st.title("claudiafito_v2 — Atendimento + Binaural (como no app antigo)")
 st.caption("Inclui presets Gamma/Theta/Alpha/Delta, Solfeggio, Chakras, Tocar/Parar e upload de música de fundo do computador.")
@@ -571,6 +583,7 @@ st.session_state.setdefault(KEY_CARRIER, 220.0)
 st.session_state.setdefault(KEY_BEAT, 10.0)
 st.session_state.setdefault(KEY_DUR_S, 120)     # duração em SEGUNDOS (igual no app antigo)
 st.session_state.setdefault(KEY_BG_GAIN, 0.12)
+st.session_state.setdefault(KEY_TONE_GAIN, 0.30)  # volume do binaural (WebAudio)
 st.session_state.setdefault("extra_freq_codes", [])
 
 # Também expõe em chaves "antigas" para o Atendimento ler (compatibilidade)
@@ -578,6 +591,7 @@ st.session_state.setdefault("binaural_carrier", float(st.session_state[KEY_CARRI
 st.session_state.setdefault("binaural_beat", float(st.session_state[KEY_BEAT]))
 st.session_state.setdefault("binaural_dur_s", int(st.session_state[KEY_DUR_S]))
 st.session_state.setdefault("binaural_bg_gain", float(st.session_state[KEY_BG_GAIN]))
+st.session_state.setdefault("binaural_tone_gain", float(st.session_state[KEY_TONE_GAIN]))
 
 # -------------------------
 # TAB: BINAURAL
@@ -599,6 +613,7 @@ with tabs[1]:
         st.session_state[KEY_BEAT] = float(band_map[faixa])
         st.session_state["binaural_beat"] = float(st.session_state[KEY_BEAT])
         st.success(f"Batida ajustada para {band_map[faixa]} Hz")
+        st.rerun()
 
     # Presets do banco
     try:
@@ -627,6 +642,7 @@ with tabs[1]:
         st.session_state["binaural_dur_s"] = int(st.session_state[KEY_DUR_S])
 
         st.success("Preset aplicado.")
+        st.rerun()
 
     c1, c2, c3 = st.columns(3)
     carrier = c1.number_input("Carrier (Hz)", 50.0, 1000.0, step=1.0, key=KEY_CARRIER)
@@ -655,8 +671,21 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
         )
 
     st.markdown("🎵 Música de fundo (opcional) — do seu computador (como antes)")
+    # Volume do binaural (separado do volume do fundo)
+    tone_gain = st.slider(
+        "Volume do binaural",
+        min_value=0.02,
+        max_value=0.80,
+        step=0.01,
+        key=KEY_TONE_GAIN,
+        help="Aumente se estiver baixo. Use fones e mantenha volume moderado.",
+    )
+    # espelha para o Atendimento (compatibilidade)
+    st.session_state["binaural_tone_gain"] = float(tone_gain)
+
+
     bg_up = st.file_uploader("MP3/WAV/OGG (até 12MB)", type=["mp3", "wav", "ogg"], key=K("binaural", "bg_file"))
-    bg_gain = st.slider("Volume do fundo", 0.0, 0.4, float(st.session_state[KEY_BG_GAIN]), 0.01, key=KEY_BG_GAIN)
+    bg_gain = st.slider("Volume do fundo", min_value=0.0, max_value=0.60, step=0.01, key=KEY_BG_GAIN)
 
     st.session_state["binaural_bg_gain"] = float(bg_gain)
 
@@ -673,7 +702,14 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
 
     st.markdown("▶️ **Player (Tocar/Parar)** — binaural + fundo")
     components.html(
-        webaudio_binaural_html(float(carrier), float(beat), seconds=int(dur_s), bg_data_url=bg_url, bg_gain=float(bg_gain)),
+        webaudio_binaural_html(
+            float(carrier),
+            float(beat),
+            seconds=int(dur_s),
+            bg_data_url=bg_url,
+            bg_gain=float(bg_gain),
+            binaural_gain=float(tone_gain),
+        ),
         height=140,
     )
 
@@ -713,7 +749,9 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
     extra_codes = [c for c in extra_codes if not (c in seen or seen.add(c))]
     st.session_state["extra_freq_codes"] = extra_codes
 
-    wav = synth_binaural_wav(float(carrier), float(beat), seconds=20, sr=44100, amp=0.2)
+    # WAV de preview/download (20s): usa um ganho proporcional ao "Volume do binaural"
+    wav_amp = min(0.95, max(0.05, float(tone_gain) * 4.0))
+    wav = synth_binaural_wav(float(carrier), float(beat), seconds=20, sr=44100, amp=float(wav_amp))
     st.audio(wav, format="audio/wav")
     st.download_button(
         "Baixar WAV (20s)",
