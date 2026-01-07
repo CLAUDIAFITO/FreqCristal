@@ -1662,7 +1662,15 @@ with tabs[0]:
                 qs = q_by_domain.get(_dom, [])
                 for i, q in enumerate(qs):
                     with cols_q[i % 2]:
-                        answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=K("att", q["id"]))
+                        kq = K("att", q["id"])
+
+                        if kq in st.session_state:
+
+                            answers[q["id"]] = st.slider(q["label"], 0, 4, key=kq)
+
+                        else:
+
+                            answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=kq)
 
         # Garantia (caso a lista de perguntas mude no futuro)
         for q in QUESTIONS:
@@ -1678,7 +1686,15 @@ with tabs[0]:
         fcols = st.columns(2)
         for i, f in enumerate(FLAGS):
             with fcols[i % 2]:
-                flags[f["id"]] = st.checkbox(f["label"], value=False, key=K("att", f["id"]))
+                kf = K("att", f["id"])
+
+                if kf in st.session_state:
+
+                    flags[f["id"]] = st.checkbox(f["label"], key=kf)
+
+                else:
+
+                    flags[f["id"]] = st.checkbox(f["label"], value=False, key=kf)
 
         notes = st.text_area("Notas do terapeuta (opcional)", height=100, key=K("att", "notes"))
 
