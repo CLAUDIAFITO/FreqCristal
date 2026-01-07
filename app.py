@@ -354,10 +354,10 @@ def webaudio_binaural_html(
     g = float(bg_gain)
 
     return f"""
-<div style="padding:.6rem;border:1px solid #eee;border-radius:10px;">
+<div style=\"padding:.6rem;border:1px solid #eee;border-radius:10px;\">
   <b>Binaural</b> — L {fl:.2f} Hz • R {fr:.2f} Hz • {sec}s {'<span style="margin-left:6px;">🎵 fundo</span>' if bg_data_url else ''}<br/>
-  <button id="bplay">▶️ Tocar</button> <button id="bstop">⏹️ Parar</button>
-  <div style="font-size:.9rem;color:#666">Use fones · volume moderado</div>
+  <button id=\"bplay\">▶️ Tocar</button> <button id=\"bstop\">⏹️ Parar</button>
+  <div style=\"font-size:.9rem;color:#666\">Use fones · volume moderado</div>
 </div>
 <script>
 let ctx=null, l=null, r=null, gL=null, gR=null, merger=null, timer=null;
@@ -555,17 +555,29 @@ def insert_session_nova(plan_id: str, patient_id: str, session_n: int, scheduled
 def K(*parts: str) -> str:
     return "__".join(parts)
 
+# ---- CHAVES únicas para widgets binaurais (não duplicar estado) ----
+KEY_CARRIER = K("binaural", "carrier")
+KEY_BEAT    = K("binaural", "beat")
+KEY_DUR_S   = K("binaural", "dur_s")
+KEY_BG_GAIN = K("binaural", "bg_gain")
+
 st.title("claudiafito_v2 — Atendimento + Binaural (como no app antigo)")
 st.caption("Inclui presets Gamma/Theta/Alpha/Delta, Solfeggio, Chakras, Tocar/Parar e upload de música de fundo do computador.")
 
 tabs = st.tabs(["Atendimento", "Binaural"])
 
-# Shared binaural settings
-st.session_state.setdefault("binaural_carrier", 220.0)
-st.session_state.setdefault("binaural_beat", 10.0)
-st.session_state.setdefault("binaural_dur_s", 120)     # duração em SEGUNDOS (igual no app antigo)
-st.session_state.setdefault("binaural_bg_gain", 0.12)
+# Shared binaural settings (1 fonte de verdade = os widgets)
+st.session_state.setdefault(KEY_CARRIER, 220.0)
+st.session_state.setdefault(KEY_BEAT, 10.0)
+st.session_state.setdefault(KEY_DUR_S, 120)     # duração em SEGUNDOS (igual no app antigo)
+st.session_state.setdefault(KEY_BG_GAIN, 0.12)
 st.session_state.setdefault("extra_freq_codes", [])
+
+# Também expõe em chaves "antigas" para o Atendimento ler (compatibilidade)
+st.session_state.setdefault("binaural_carrier", float(st.session_state[KEY_CARRIER]))
+st.session_state.setdefault("binaural_beat", float(st.session_state[KEY_BEAT]))
+st.session_state.setdefault("binaural_dur_s", int(st.session_state[KEY_DUR_S]))
+st.session_state.setdefault("binaural_bg_gain", float(st.session_state[KEY_BG_GAIN]))
 
 # -------------------------
 # TAB: BINAURAL
@@ -583,7 +595,9 @@ with tabs[1]:
     bcol1, bcol2 = st.columns([2, 1])
     faixa = bcol1.selectbox("Faixa de ondas (atalho)", list(band_map.keys()), index=2, key=K("binaural", "band"))
     if bcol2.button("Aplicar faixa", key=K("binaural", "apply_band")):
-        st.session_state["binaural_beat"] = float(band_map[faixa])
+        # A faixa troca SOMENTE o beat (carrier fica como está) — isso é normal.
+        st.session_state[KEY_BEAT] = float(band_map[faixa])
+        st.session_state["binaural_beat"] = float(st.session_state[KEY_BEAT])
         st.success(f"Batida ajustada para {band_map[faixa]} Hz")
 
     # Presets do banco
@@ -597,21 +611,29 @@ with tabs[1]:
     cols_top = st.columns([2, 1])
     preset_names = list(mapa_pres.keys()) or ["(nenhum)"]
     preset_escolhido = cols_top[0].selectbox("Tratamento pré-definido (binaural_presets)", preset_names, key=K("binaural", "preset"))
+
     if cols_top[1].button("Aplicar preset", key=K("binaural", "apply_preset")) and preset_escolhido in mapa_pres:
         p = mapa_pres[preset_escolhido]
-        st.session_state["binaural_carrier"] = float(p.get("carrier_hz") or 220.0)
-        st.session_state["binaural_beat"] = float(p.get("beat_hz") or 10.0)
-        # no app antigo a duração era em segundos; aqui aceitamos duracao_min e convertemos:
+        # >>> IMPORTANTE: atualizar os mesmos KEYS dos widgets <<<
+        st.session_state[KEY_CARRIER] = float(p.get("carrier_hz") or 220.0)
+        st.session_state[KEY_BEAT]    = float(p.get("beat_hz") or 10.0)
         dur_min = p.get("duracao_min")
         if dur_min is not None:
-            st.session_state["binaural_dur_s"] = int(float(dur_min) * 60)
+            st.session_state[KEY_DUR_S] = int(float(dur_min) * 60)
+
+        # espelha para o Atendimento
+        st.session_state["binaural_carrier"] = float(st.session_state[KEY_CARRIER])
+        st.session_state["binaural_beat"] = float(st.session_state[KEY_BEAT])
+        st.session_state["binaural_dur_s"] = int(st.session_state[KEY_DUR_S])
+
         st.success("Preset aplicado.")
 
     c1, c2, c3 = st.columns(3)
-    carrier = c1.number_input("Carrier (Hz)", 50.0, 1000.0, float(st.session_state["binaural_carrier"]), 1.0, key=K("binaural", "carrier"))
-    beat = c2.number_input("Batida (Hz)", 0.5, 45.0, float(st.session_state["binaural_beat"]), 0.5, key=K("binaural", "beat"))
-    dur_s = int(c3.number_input("Duração (s)", 10, 3600, int(st.session_state["binaural_dur_s"]), 5, key=K("binaural", "dur_s")))
+    carrier = c1.number_input("Carrier (Hz)", 50.0, 1000.0, step=1.0, key=KEY_CARRIER)
+    beat    = c2.number_input("Batida (Hz)", 0.5, 45.0, step=0.5, key=KEY_BEAT)
+    dur_s   = int(c3.number_input("Duração (s)", 10, 3600, step=5, key=KEY_DUR_S))
 
+    # espelha para o Atendimento
     st.session_state["binaural_carrier"] = float(carrier)
     st.session_state["binaural_beat"] = float(beat)
     st.session_state["binaural_dur_s"] = int(dur_s)
@@ -634,7 +656,8 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
 
     st.markdown("🎵 Música de fundo (opcional) — do seu computador (como antes)")
     bg_up = st.file_uploader("MP3/WAV/OGG (até 12MB)", type=["mp3", "wav", "ogg"], key=K("binaural", "bg_file"))
-    bg_gain = st.slider("Volume do fundo", 0.0, 0.4, float(st.session_state["binaural_bg_gain"]), 0.01, key=K("binaural", "bg_gain"))
+    bg_gain = st.slider("Volume do fundo", 0.0, 0.4, float(st.session_state[KEY_BG_GAIN]), 0.01, key=KEY_BG_GAIN)
+
     st.session_state["binaural_bg_gain"] = float(bg_gain)
 
     raw = None
@@ -654,7 +677,6 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
         height=140,
     )
 
-    # Frequências extras (Solfeggio + Chakras)
     st.markdown("🔔 Frequências auxiliares (Solfeggio + Chakras)")
     try:
         sol = load_frequencies("solfeggio")
@@ -687,7 +709,6 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
     if custom_code.strip():
         extra_codes.append(custom_code.strip().upper())
 
-    # dedupe preserving order
     seen = set()
     extra_codes = [c for c in extra_codes if not (c in seen or seen.add(c))]
     st.session_state["extra_freq_codes"] = extra_codes
@@ -711,7 +732,6 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
 - **Gamma 40 Hz** → estimulação breve (5–12 min), volume baixo.  
             """
         )
-
 
 # -------------------------
 # TAB: ATENDIMENTO
@@ -795,15 +815,14 @@ with tabs[0]:
     selected_names = select_protocols(scores, protocols)
     plan = merge_plan(selected_names, protocols)
 
-    # Audio block (salva no plano/sessões; música de fundo local não persiste)
     audio_block = {
         "binaural": {
-            "carrier_hz": float(st.session_state["binaural_carrier"]),
-            "beat_hz": float(st.session_state["binaural_beat"]),
-            "duracao_s": int(st.session_state["binaural_dur_s"]),
+            "carrier_hz": float(st.session_state[KEY_CARRIER]),
+            "beat_hz": float(st.session_state[KEY_BEAT]),
+            "duracao_s": int(st.session_state[KEY_DUR_S]),
         },
         "bg": {
-            "gain": float(st.session_state["binaural_bg_gain"]),
+            "gain": float(st.session_state[KEY_BG_GAIN]),
             "note": "música de fundo é selecionada no computador (não é salva no banco).",
         },
     }
@@ -873,4 +892,3 @@ with tabs[0]:
                 st.success(f"Plano criado e sessões geradas em sessions_nova! plan_id={plan_id}")
             except Exception as e:
                 st.error(f"Erro ao gerar plano/sessões: {e}")
-
