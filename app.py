@@ -1262,6 +1262,58 @@ def generate_receituario_pdf_bytes(data: Dict[str, Any]) -> bytes:
 def K(*parts: str) -> str:
     return "__".join(parts)
 
+
+def _json_str(x: Any) -> str:
+    """String segura para mostrar em grid (mantém dict/list como JSON)."""
+    if x is None:
+        return ""
+    if isinstance(x, (dict, list)):
+        try:
+            return json.dumps(x, ensure_ascii=False)
+        except Exception:
+            return str(x)
+    return str(x)
+
+def json_to_df(obj: Any, name: str = "item") -> pd.DataFrame:
+    """
+    Converte dict/list/valor em DataFrame para visualização.
+    - dict -> colunas: chave, valor
+    - list[dict] -> normaliza colunas
+    - list[scalar] -> 1 coluna (name)
+    - scalar -> 1 coluna (name)
+    """
+    if obj is None:
+        return pd.DataFrame(columns=[name])
+    # tenta parsear string JSON
+    if isinstance(obj, str):
+        s = obj.strip()
+        if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+            try:
+                obj = json.loads(s)
+            except Exception:
+                return pd.DataFrame([{name: obj}])
+        else:
+            return pd.DataFrame([{name: obj}])
+
+    if isinstance(obj, dict):
+        rows = [{"chave": k, "valor": _json_str(v)} for k, v in obj.items()]
+        return pd.DataFrame(rows)
+
+    if isinstance(obj, list):
+        if not obj:
+            return pd.DataFrame(columns=[name])
+        if all(isinstance(it, dict) for it in obj):
+            # normaliza e garante que valores complexos virem string
+            rows = []
+            for it in obj:
+                row = {k: _json_str(v) for k, v in it.items()}
+                rows.append(row)
+            return pd.DataFrame(rows)
+        # lista de valores
+        return pd.DataFrame([{name: _json_str(it)} for it in obj])
+
+    return pd.DataFrame([{name: _json_str(obj)}])
+
 # ---- CHAVES únicas para widgets binaurais (não duplicar estado) ----
 KEY_CARRIER = K("binaural", "carrier")
 KEY_BEAT    = K("binaural", "beat")
@@ -1584,7 +1636,11 @@ with tabs[0]:
                     st.caption("—")
             with d2:
                 st.markdown("**Flags / notas**")
-                st.write(_as_dict(rsel.get("flags_json")) or "—")
+                flags_view = _as_dict(rsel.get("flags_json"))
+                if flags_view:
+                    st.dataframe(json_to_df(flags_view, name="flag"), use_container_width=True, hide_index=True)
+                else:
+                    st.caption("—")
                 if (rsel.get("notes") or ""):
                     st.write(rsel.get("notes"))
 
@@ -1861,9 +1917,12 @@ with tabs[0]:
             st.dataframe(df_plano, use_container_width=True, hide_index=True)
 
             st.markdown("### Sugestão — Cama de Cristal")
-            st.write("Chakras prioritários:", plan.get("chakras_prioritarios") or [])
-            st.write("Cristais sugeridos:", plan.get("cristais_sugeridos") or [])
-            st.write("Fito sugerida:", plan.get("fito_sugerida") or [])
+            st.caption("Chakras prioritários")
+            st.dataframe(json_to_df(plan.get("chakras_prioritarios") or [], name="chakra"), use_container_width=True, hide_index=True)
+            st.caption("Cristais sugeridos")
+            st.dataframe(json_to_df(plan.get("cristais_sugeridos") or [], name="cristal"), use_container_width=True, hide_index=True)
+            st.caption("Fito sugerida")
+            st.dataframe(json_to_df(plan.get("fito_sugerida") or [], name="fito"), use_container_width=True, hide_index=True)
             if cama_rows:
                 st.dataframe(pd.DataFrame(cama_rows), use_container_width=True, hide_index=True)
             else:
@@ -1906,9 +1965,10 @@ with tabs[0]:
                     pref_cols = [c for c in ["code", "nome", "hz", "tipo", "chakra", "cor", "descricao"] if c in df_fd.columns]
                     st.dataframe(df_fd[pref_cols] if pref_cols else df_fd, use_container_width=True, hide_index=True)
                 else:
-                    st.write(extra_freq_codes)
+                    st.dataframe(json_to_df(extra_freq_codes, name="code"), use_container_width=True, hide_index=True)
 
-            st.write("Áudio (binaural):", audio_block["binaural"])
+            st.caption("Áudio (binaural)")
+            st.dataframe(json_to_df(audio_block.get("binaural") or {}, name="campo"), use_container_width=True, hide_index=True)
 
         st.subheader("Sessões pré-definidas")
         st.dataframe(
