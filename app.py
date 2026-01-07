@@ -1820,6 +1820,67 @@ with tabs[0]:
         # -------------------------
         st.divider()
         st.markdown("## Resumo do atendimento")
+        # --- DataFrames base para os grids (evita NameError) ---
+        df_scores = pd.DataFrame(
+            [{"domínio": _DOMAIN_LABEL.get(k, k), "score_%": v} for k, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
+        )
+
+        df_focus = pd.DataFrame(
+            [
+                {
+                    "prioridade": i + 1,
+                    "domínio": _DOMAIN_LABEL.get(d, d),
+                    "score_%": float(sc),
+                    "protocolo_sugerido": DOMAIN_TO_PROTOCOL.get(d, "") or "",
+                }
+                for i, (d, sc) in enumerate(focus or [])
+            ]
+        )
+
+        try:
+            semanas_est = max(1, int(math.ceil((int(qty) * int(cadence)) / 7)))
+        except Exception:
+            semanas_est = ""
+        dt_ini = _fmt_date_br(scripts[0]["scheduled_date"]) if scripts else ""
+        dt_fim = _fmt_date_br(scripts[-1]["scheduled_date"]) if scripts else ""
+        df_sessoes = pd.DataFrame(
+            [
+                {
+                    "qtd_sessões": qty,
+                    "cadência_dias": cadence,
+                    "duração_estimada_semanas": semanas_est,
+                    "início_previsto": dt_ini,
+                    "fim_previsto": dt_fim,
+                }
+            ]
+        )
+
+        prot_rows = []
+        for name in (selected_names or []):
+            c = (protocols.get(name, {}) or {}).get("content", {}) or {}
+            prot_rows.append(
+                {
+                    "protocolo": name,
+                    "domínio": (protocols.get(name, {}) or {}).get("domain") or "",
+                    "tem_cama_cristal": bool(c.get("cama_cristal") or c.get("cama")),
+                    "tem_binaural": bool(c.get("binaural")),
+                    "tem_cristais": bool(c.get("cristais")),
+                    "tem_fito": bool(c.get("fito")),
+                }
+            )
+        df_protocolos = pd.DataFrame(prot_rows) if prot_rows else pd.DataFrame(columns=["protocolo", "domínio"])
+
+        def _items_txt(x):
+            return _join_list(x, sep="; ")
+
+        plan_rows = [
+            {"categoria": "Chakras prioritários", "itens": _items_txt(plan.get("chakras_prioritarios"))},
+            {"categoria": "Emoções prioritárias", "itens": _items_txt(plan.get("emocoes_prioritarias"))},
+            {"categoria": "Cristais sugeridos", "itens": _items_txt(plan.get("cristais_sugeridos"))},
+            {"categoria": "Fito sugerida", "itens": _items_txt(plan.get("fito_sugerida"))},
+            {"categoria": "Alertas / cuidados do protocolo", "itens": _items_txt(plan.get("alertas"))},
+        ]
+        df_plano = pd.DataFrame(plan_rows)
 
         # 1) Pontuações (anamnese) + Foco (Top 3)
         r1c1, r1c2 = st.columns(2)
