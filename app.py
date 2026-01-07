@@ -1321,8 +1321,8 @@ KEY_DUR_S   = K("binaural", "dur_s")
 KEY_BG_GAIN = K("binaural", "bg_gain")
 KEY_TONE_GAIN = K("binaural", "tone_gain")
 
-st.title("claudiafito_v2 — Atendimento + Binaural (como no app antigo)")
-st.caption("Inclui presets Gamma/Theta/Alpha/Delta, Solfeggio, Chakras, Tocar/Parar e upload de música de fundo do computador.")
+st.title("🛏️🌈 SISTEMA INTEGRADO DE TERAPIAS -  DOCE CONEXÃO) 🛏️🌈 ")
+st.caption("Terapias Integrativas Cama de cristal, Cromoteraia, Fitoterapia, Frequencias binaurais, Solfeggios e Chakras.")
 
 tabs = st.tabs(["Atendimento", "Binaural"])
 
@@ -1523,7 +1523,7 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
 # TAB: ATENDIMENTO
 # -------------------------
 with tabs[0]:
-    st.subheader("Atendimento (gera plano + sessions_nova)")
+    st.subheader("Atendimento (PLANO + SESSÕES)")
 
     with st.sidebar:
         st.header("Paciente")
@@ -1657,7 +1657,7 @@ with tabs[0]:
 
         # Planos
         st.divider()
-        st.markdown("**Planos gerados (sessions_nova)**")
+        st.markdown("**Planos gerados**")
         try:
             plans_hist = list_plans(patient_id, limit=10)
         except Exception as e:
@@ -1902,7 +1902,7 @@ with tabs[0]:
             st.dataframe(df_sessoes, use_container_width=True, hide_index=True)
 
         with r2c2:
-            st.markdown("### Frequências extras (codes)")
+            st.markdown("### Frequências extras")
             if extra_freq_codes:
                 st.dataframe(pd.DataFrame([{"code": c} for c in extra_freq_codes]), use_container_width=True, hide_index=True)
             else:
@@ -1968,7 +1968,7 @@ with tabs[0]:
                 hide_index=True,
             )
 
-            st.markdown("### Áudio (binaural) — JSON")
+            st.markdown("### Áudio (binaural)")
             st.dataframe(json_to_df(audio_block.get("binaural"), "valor"), use_container_width=True, hide_index=True)
 
         with fcol2:
