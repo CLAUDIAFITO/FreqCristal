@@ -1819,157 +1819,112 @@ with tabs[0]:
         # Resumo em grids (Scores / Foco / Sessões / Protocolos / Plano)
         # -------------------------
         st.divider()
-        left, right = st.columns(2)
+        st.markdown("## Resumo do atendimento")
 
-        # Scores (grid)
-        df_scores = pd.DataFrame(
-            [{"domínio": _DOMAIN_LABEL.get(k, k), "score_%": v} for k, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
-        )
-
-        # Foco (grid)
-        df_focus = pd.DataFrame(
-            [
-                {
-                    "prioridade": i + 1,
-                    "domínio": _DOMAIN_LABEL.get(d, d),
-                    "score_%": float(sc),
-                    "protocolo_sugerido": DOMAIN_TO_PROTOCOL.get(d, "") or "",
-                }
-                for i, (d, sc) in enumerate(focus or [])
-            ]
-        )
-
-        # Sessões sugeridas (grid)
-        try:
-            semanas_est = max(1, int(math.ceil((int(qty) * int(cadence)) / 7)))
-        except Exception:
-            semanas_est = ""
-        dt_ini = _fmt_date_br(scripts[0]["scheduled_date"]) if scripts else ""
-        dt_fim = _fmt_date_br(scripts[-1]["scheduled_date"]) if scripts else ""
-        df_sessoes = pd.DataFrame(
-            [
-                {
-                    "qtd_sessões": qty,
-                    "cadência_dias": cadence,
-                    "duração_estimada_semanas": semanas_est,
-                    "início_previsto": dt_ini,
-                    "fim_previsto": dt_fim,
-                }
-            ]
-        )
-
-        # Protocolos (grid)
-        prot_rows = []
-        for name in (selected_names or []):
-            c = (protocols.get(name, {}) or {}).get("content", {}) or {}
-            prot_rows.append(
-                {
-                    "protocolo": name,
-                    "domínio": (protocols.get(name, {}) or {}).get("domain") or "",
-                    "tem_cama_cristal": bool(c.get("cama_cristal") or c.get("cama")),
-                    "tem_binaural": bool(c.get("binaural")),
-                    "tem_cristais": bool(c.get("cristais")),
-                    "tem_fito": bool(c.get("fito")),
-                }
-            )
-        df_protocolos = pd.DataFrame(prot_rows) if prot_rows else pd.DataFrame(columns=["protocolo", "domínio"])
-
-        # Plano consolidado (grid)
-        def _items_txt(x):
-            return _join_list(x, sep="; ")
-
-        plan_rows = [
-            {"categoria": "Chakras prioritários", "itens": _items_txt(plan.get("chakras_prioritarios"))},
-            {"categoria": "Emoções prioritárias", "itens": _items_txt(plan.get("emocoes_prioritarias"))},
-            {"categoria": "Cristais sugeridos", "itens": _items_txt(plan.get("cristais_sugeridos"))},
-            {"categoria": "Fito sugerida", "itens": _items_txt(plan.get("fito_sugerida"))},
-            {"categoria": "Alertas / cuidados do protocolo", "itens": _items_txt(plan.get("alertas"))},
-        ]
-        df_plano = pd.DataFrame(plan_rows)
-
-        with left:
-            st.markdown("### Pontuações / Foco / Sessões sugeridas")
+        # 1) Pontuações (anamnese) + Foco (Top 3)
+        r1c1, r1c2 = st.columns(2)
+        with r1c1:
+            st.markdown("### Pontuações (anamnese)")
             st.dataframe(df_scores, use_container_width=True, hide_index=True)
 
-            st.markdown("**Foco (Top 3)**")
+        with r1c2:
+            st.markdown("### Foco (Top 3)")
             if not df_focus.empty:
                 st.dataframe(df_focus, use_container_width=True, hide_index=True)
             else:
                 st.caption("—")
 
-            st.markdown("**Sessões sugeridas**")
+        # 2) Sessões sugeridas + Frequências extras (codes)
+        r2c1, r2c2 = st.columns(2)
+        with r2c1:
+            st.markdown("### Sessões sugeridas")
             st.dataframe(df_sessoes, use_container_width=True, hide_index=True)
 
-            st.markdown("**Frequências extras (codes)**")
+        with r2c2:
+            st.markdown("### Frequências extras (codes)")
             if extra_freq_codes:
                 st.dataframe(pd.DataFrame([{"code": c} for c in extra_freq_codes]), use_container_width=True, hide_index=True)
             else:
                 st.caption("Sem frequências extras selecionadas.")
 
-        with right:
-            st.markdown("### Protocolos e plano consolidado")
+        # 3) Protocolos + Plano consolidado
+        r3c1, r3c2 = st.columns(2)
+        with r3c1:
+            st.markdown("### Protocolos selecionados")
             if not df_protocolos.empty:
                 st.dataframe(df_protocolos, use_container_width=True, hide_index=True)
             else:
                 st.caption("—")
 
-            st.markdown("**Plano consolidado (resumo)**")
+        with r3c2:
+            st.markdown("### Plano consolidado (resumo)")
             st.dataframe(df_plano, use_container_width=True, hide_index=True)
 
-            st.markdown("### Sugestão — Cama de Cristal")
-            st.caption("Chakras prioritários")
-            st.dataframe(json_to_df(plan.get("chakras_prioritarios") or [], name="chakra"), use_container_width=True, hide_index=True)
-            st.caption("Cristais sugeridos")
-            st.dataframe(json_to_df(plan.get("cristais_sugeridos") or [], name="cristal"), use_container_width=True, hide_index=True)
-            st.caption("Fito sugerida")
-            st.dataframe(json_to_df(plan.get("fito_sugerida") or [], name="fito"), use_container_width=True, hide_index=True)
-            if cama_rows:
-                st.dataframe(pd.DataFrame(cama_rows), use_container_width=True, hide_index=True)
-            else:
-                st.caption("Nenhum plano de cama_cristal cadastrado nos protocolos selecionados.")
+        # 4) Sugestão — Cama de Cristal (tudo em grid)
+        st.divider()
+        st.markdown("## Sugestão — Cama de Cristal")
 
-            st.markdown("### Sugestão — Frequências")
-            carrier_now = float(st.session_state.get(KEY_CARRIER, 220.0))
-            beat_now = float(st.session_state.get(KEY_BEAT, 10.0))
-            dur_now = int(st.session_state.get(KEY_DUR_S, 120))
-            bt_now = abs(float(beat_now))
-            fL_now = max(20.0, carrier_now - bt_now / 2.0)
-            fR_now = carrier_now + bt_now / 2.0
+        cc1, cc2, cc3 = st.columns(3)
+        with cc1:
+            st.markdown("**Chakras prioritários**")
+            st.dataframe(json_to_df(plan.get("chakras_prioritarios"), "chakra"), use_container_width=True, hide_index=True)
+        with cc2:
+            st.markdown("**Cristais sugeridos**")
+            st.dataframe(json_to_df(plan.get("cristais_sugeridos"), "cristal"), use_container_width=True, hide_index=True)
+        with cc3:
+            st.markdown("**Fito sugerida**")
+            st.dataframe(json_to_df(plan.get("fito_sugerida"), "fito"), use_container_width=True, hide_index=True)
 
+        st.markdown("**Cama de cristal por protocolo**")
+        if cama_rows:
+            st.dataframe(pd.DataFrame(cama_rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Nenhum plano de cama_cristal cadastrado nos protocolos selecionados.")
+
+        # 5) Sugestão — Frequências / Binaural (tudo em grid)
+        st.divider()
+        st.markdown("## Sugestão — Frequências / Binaural")
+
+        carrier_now = float(st.session_state.get(KEY_CARRIER, 220.0))
+        beat_now = float(st.session_state.get(KEY_BEAT, 10.0))
+        dur_now = int(st.session_state.get(KEY_DUR_S, 120))
+        bt_now = abs(float(beat_now))
+        fL_now = max(20.0, carrier_now - bt_now / 2.0)
+        fR_now = carrier_now + bt_now / 2.0
+
+        fcol1, fcol2 = st.columns(2)
+        with fcol1:
+            st.markdown("### Binaural atual")
             st.dataframe(
-                pd.DataFrame(
-                    [
-                        {
-                            "carrier_hz": carrier_now,
-                            "beat_hz": beat_now,
-                            "duracao_s": dur_now,
-                            "L_hz": round(fL_now, 2),
-                            "R_hz": round(fR_now, 2),
-                        }
-                    ]
-                ),
+                pd.DataFrame([{
+                    "carrier_hz": carrier_now,
+                    "beat_hz": beat_now,
+                    "duracao_s": dur_now,
+                    "L_hz": round(fL_now, 2),
+                    "R_hz": round(fR_now, 2),
+                }]),
                 use_container_width=True,
                 hide_index=True,
             )
 
+            st.markdown("### Áudio (binaural) — JSON")
+            st.dataframe(json_to_df(audio_block.get("binaural"), "valor"), use_container_width=True, hide_index=True)
+
+        with fcol2:
+            st.markdown("### Binaural sugerido pelos protocolos")
             if proto_binaural_rows:
-                st.caption("Binaural sugerido pelos protocolos selecionados (se cadastrado):")
                 st.dataframe(pd.DataFrame(proto_binaural_rows), use_container_width=True, hide_index=True)
             else:
                 st.caption("Sem binaural sugerido cadastrado nos protocolos selecionados.")
 
-            if extra_freq_codes:
-                st.caption("Frequências extras selecionadas (aba Binaural):")
-                if extra_freq_details:
-                    df_fd = pd.DataFrame(extra_freq_details)
-                    pref_cols = [c for c in ["code", "nome", "hz", "tipo", "chakra", "cor", "descricao"] if c in df_fd.columns]
-                    st.dataframe(df_fd[pref_cols] if pref_cols else df_fd, use_container_width=True, hide_index=True)
-                else:
-                    st.dataframe(json_to_df(extra_freq_codes, name="code"), use_container_width=True, hide_index=True)
-
-            st.caption("Áudio (binaural)")
-            st.dataframe(json_to_df(audio_block.get("binaural") or {}, name="campo"), use_container_width=True, hide_index=True)
-
+        if extra_freq_codes:
+            st.markdown("### Frequências extras — detalhes")
+            if extra_freq_details:
+                df_fd = pd.DataFrame(extra_freq_details)
+                pref_cols = [c for c in ["code", "nome", "hz", "tipo", "chakra", "cor", "descricao"] if c in df_fd.columns]
+                st.dataframe(df_fd[pref_cols] if pref_cols else df_fd, use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(pd.DataFrame([{"code": c} for c in extra_freq_codes]), use_container_width=True, hide_index=True)
         st.subheader("Sessões pré-definidas")
         st.dataframe(
             pd.DataFrame([{"sessao": s["session_n"], "data": s["scheduled_date"], "status": s["status"]} for s in scripts]),
