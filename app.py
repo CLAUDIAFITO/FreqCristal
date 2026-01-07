@@ -739,6 +739,510 @@ def get_frequencies_by_codes(codes: List[str]) -> List[Dict[str, Any]]:
             return []
 
 
+
+
+# -------------------------
+# Impressão (Receituário)
+# -------------------------
+TEMPLATE_RX_DOCX_DEFAULT = "Receituario_Claudiafito_Template.docx"
+import datetime
+
+def get_patient(patient_id: str) -> Optional[Dict[str, Any]]:
+    """Busca dados completos do paciente (nome/telefone/email/nascimento/notas)."""
+    if not patient_id:
+        return None
+    if BACKEND == "postgres":
+        return qone(
+            "select id, nome, telefone, email, nascimento, notas from public.patients where id=%s",
+            (patient_id,),
+        )
+    rows = sb_select(
+        "patients",
+        columns="id,nome,telefone,email,nascimento,notas",
+        eq={"id": patient_id},
+        limit=1,
+    )
+    return rows[0] if rows else None
+
+
+def _fmt_date_br(x) -> str:
+    if not x:
+        return ""
+    try:
+        if isinstance(x, (datetime.date, datetime.datetime)):
+            return x.strftime("%d/%m/%Y")
+        # strings ISO
+        s = str(x)
+        # aceita "YYYY-MM-DD" ou "YYYY-MM-DDTHH:MM:SS..."
+        d = datetime.date.fromisoformat(s[:10])
+        return d.strftime("%d/%m/%Y")
+    except Exception:
+        return str(x)
+
+
+def _fmt_time_min_from_seconds(sec: Optional[int]) -> str:
+    if sec is None:
+        return ""
+    try:
+        sec = int(sec)
+        if sec < 60:
+            return f"{sec}s"
+        m = sec // 60
+        r = sec % 60
+        return f"{m} min" + (f" {r}s" if r else "")
+    except Exception:
+        return str(sec)
+
+
+_DOMAIN_LABEL = {
+    "sono": "Sono",
+    "ansiedade": "Ansiedade",
+    "humor_baixo": "Humor baixo",
+    "exaustao": "Exaustão",
+    "pertencimento": "Pertencimento",
+    "tensao": "Tensão",
+    "ruminacao": "Ruminação",
+}
+
+_DOMAIN_OBJ = {
+    "sono": "promover relaxamento e higiene do sono",
+    "ansiedade": "regular sistema nervoso e reduzir ansiedade/agitação",
+    "humor_baixo": "elevar vitalidade e reorganizar energia emocional",
+    "exaustao": "repor energia e reduzir sobrecarga",
+    "pertencimento": "fortalecer pertencimento, autocompaixão e segurança interna",
+    "tensao": "reduzir tensão muscular e estado de alerta",
+    "ruminacao": "acalmar mente repetitiva e melhorar foco/presença",
+}
+
+
+def _join_list(x, sep=", "):
+    if not x:
+        return ""
+    if isinstance(x, str):
+        return x
+    if isinstance(x, list):
+        parts = []
+        for it in x:
+            if it is None:
+                continue
+            if isinstance(it, dict):
+                # tenta campos comuns
+                nome = it.get("nome") or it.get("erva") or it.get("cristal") or it.get("item") or ""
+                poso = it.get("posologia") or it.get("dose") or ""
+                preparo = it.get("preparo") or it.get("como_usar") or ""
+                s = str(nome).strip()
+                if preparo:
+                    s += f" — {preparo}"
+                if poso:
+                    s += f" — {poso}"
+                if not s.strip():
+                    s = json.dumps(it, ensure_ascii=False)
+                parts.append(s)
+            else:
+                parts.append(str(it))
+        return sep.join([p for p in parts if p.strip()])
+    return str(x)
+
+
+def _summarize_cama_rows(cama_rows: Any) -> str:
+    if not cama_rows:
+        return ""
+    if isinstance(cama_rows, str):
+        return cama_rows
+    if isinstance(cama_rows, dict):
+        return _join_list([cama_rows])
+    if isinstance(cama_rows, list):
+        out = []
+        for r in cama_rows[:12]:
+            if isinstance(r, dict):
+                # tenta campos típicos
+                prot = r.get("protocolo") or ""
+                chakra = r.get("chakra") or r.get("Chakra") or ""
+                cor = r.get("cor") or r.get("Cor") or ""
+                tempo = r.get("tempo") or r.get("Tempo") or r.get("duracao_min") or r.get("min") or ""
+                item = r.get("item") or r.get("cama") or ""
+                s = ""
+                if prot:
+                    s += f"{prot}: "
+                if chakra or cor or tempo:
+                    s += " / ".join([str(x) for x in [chakra, cor, tempo] if str(x).strip()])
+                elif item:
+                    s += str(item)
+                else:
+                    s += json.dumps(r, ensure_ascii=False)
+                out.append(s)
+            else:
+                out.append(str(r))
+        return "; ".join([x for x in out if x.strip()])
+    return str(cama_rows)
+
+
+def _build_receituario_data_from_plan(patient: Dict[str, Any], plan_row: Dict[str, Any], sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    plan_json = plan_row.get("plan_json") or {}
+    complaint = (plan_json.get("complaint") or "") if isinstance(plan_json, dict) else ""
+    plan_date = (plan_json.get("date") or "") if isinstance(plan_json, dict) else ""
+    scores = (plan_json.get("scores") or {}) if isinstance(plan_json, dict) else {}
+    focus = (plan_json.get("focus") or []) if isinstance(plan_json, dict) else []
+    selected_protocols = plan_row.get("selected_protocols") or plan_json.get("selected_protocols") or plan_row.get("selected_protocols_json") or plan_row.get("selected_protocols") or []
+    merged_plan = (plan_json.get("plan") or {}) if isinstance(plan_json, dict) else {}
+
+    # Frequências auxiliares (codes)
+    freqs = plan_json.get("frequencias") if isinstance(plan_json, dict) else None
+    freq_codes = []
+    if isinstance(freqs, list):
+        for f in freqs:
+            if isinstance(f, dict) and f.get("code"):
+                freq_codes.append(str(f["code"]))
+            elif isinstance(f, str):
+                freq_codes.append(f)
+    freq_codes = [c for c in freq_codes if str(c).strip()]
+
+    # Áudio
+    audio = (plan_json.get("audio") or {}) if isinstance(plan_json, dict) else {}
+    binaural = (audio.get("binaural") or {}) if isinstance(audio, dict) else {}
+
+    # Cama de cristal: pega do primeiro script_json se existir
+    cama_txt = ""
+    if sessions:
+        sj = sessions[0].get("script_json") or {}
+        cama_txt = _summarize_cama_rows(sj.get("cama_cristal_sugestao"))
+    if not cama_txt:
+        # fallback: chakras/cor do plano consolidado
+        chakras = merged_plan.get("chakras_prioritarios") if isinstance(merged_plan, dict) else None
+        if chakras:
+            cama_txt = "Chakras prioritários: " + _join_list(chakras)
+    # Binaural dos protocolos (sugestão)
+    binaural_protocolos_txt = ""
+    if sessions:
+        sj = sessions[0].get("script_json") or {}
+        binaural_protocolos_txt = _join_list(sj.get("binaural_protocolos_sugestao"), sep="; ")
+
+    # Fito / cristais / alertas
+    fito = merged_plan.get("fito_sugerida") if isinstance(merged_plan, dict) else None
+    cristais = merged_plan.get("cristais_sugeridos") if isinstance(merged_plan, dict) else None
+    alertas = merged_plan.get("alertas") if isinstance(merged_plan, dict) else None
+
+    fito_txt = _join_list(fito, sep="\n• ")
+    if fito_txt:
+        fito_txt = "• " + fito_txt if "\n" in fito_txt else fito_txt
+
+    cristais_txt = _join_list(cristais)
+    cuidados = ""
+    if alertas:
+        cuidados = _join_list(alertas, sep="\n• ")
+        cuidados = "• " + cuidados if "\n" in cuidados else cuidados
+    # Observações de segurança (padrão)
+    cuidados_base = (
+        "• Use fones e volume moderado.\n"
+        "• Interrompa se houver desconforto (tontura, dor de cabeça, náusea).\n"
+        "• Terapia integrativa não substitui acompanhamento médico/psicológico."
+    )
+    cuidados = (cuidados.strip() + "\n" if cuidados else "") + cuidados_base
+
+    # Objetivos (derivados do foco)
+    objetivos = []
+    if isinstance(focus, list) and focus:
+        for d, sc in focus[:3]:
+            objetivos.append(f"• {_DOMAIN_LABEL.get(d, d)}: {_DOMAIN_OBJ.get(d, 'equilibrar este domínio')} (score {sc:.1f}%)")
+    objetivos_txt = "\n".join(objetivos) if objetivos else "• Acolher queixa principal e promover regulação."
+
+    # Sessões: tabela
+    sess_rows = []
+    for s in sessions[:8]:
+        sess_rows.append({
+            "n": s.get("session_n"),
+            "data": _fmt_date_br(s.get("scheduled_date") or (s.get("script_json") or {}).get("scheduled_date")),
+            "status": s.get("status") or (s.get("script_json") or {}).get("status") or "",
+        })
+
+    # Sugestão de sessões (texto)
+    qty = plan_row.get("sessions_qty") or plan_json.get("sessions_qty")
+    cadence = plan_row.get("cadence_days") or plan_json.get("cadence_days")
+    sessoes_txt = ""
+    if qty and cadence:
+        semanas = max(1, int(math.ceil((int(qty) * int(cadence)) / 7)))
+        sessoes_txt = f"{int(qty)} sessões em ~{semanas} semanas (a cada {int(cadence)} dias)."
+
+    # Binaural (texto)
+    carrier = binaural.get("carrier_hz")
+    beat = binaural.get("beat_hz")
+    dur = binaural.get("duracao_s")
+    binaural_txt = ""
+    if carrier is not None and beat is not None:
+        binaural_txt = f"Carrier {float(carrier):.0f} Hz | Beat {float(beat):.1f} Hz | Duração {_fmt_time_min_from_seconds(dur)}"
+        if binaural_protocolos_txt:
+            binaural_txt += f"\nSugestões por protocolo: {binaural_protocolos_txt}"
+
+    freq_aux_txt = ", ".join(freq_codes) if freq_codes else ""
+
+    return {
+        "patient_nome": patient.get("nome") or "",
+        "patient_nasc": _fmt_date_br(patient.get("nascimento")),
+        "patient_whats": patient.get("telefone") or "",
+        "patient_email": patient.get("email") or "",
+        "sessao_data": _fmt_date_br(plan_date) if plan_date else _fmt_date_br(datetime.date.today()),
+        "queixa": complaint or "",
+        "scores": scores or {},
+        "focus": focus or [],
+        "protocolos": selected_protocols or [],
+        "objetivos_txt": objetivos_txt,
+        "sessoes_txt": sessoes_txt,
+        "binaural_txt": binaural_txt,
+        "freq_aux_txt": freq_aux_txt,
+        "cama_txt": cama_txt,
+        "fito_txt": fito_txt or "",
+        "cristais_txt": cristais_txt or "",
+        "cuidados_txt": cuidados,
+        "sess_rows": sess_rows,
+    }
+
+
+def _docx_replace_in_paragraph(paragraph, mapping: Dict[str, str]):
+    # substitui mantendo o estilo do primeiro run
+    if not paragraph.runs:
+        return
+    full = "".join(r.text for r in paragraph.runs)
+    new = full
+    for k, v in mapping.items():
+        if k in new:
+            new = new.replace(k, v)
+    if new != full:
+        paragraph.runs[0].text = new
+        for r in paragraph.runs[1:]:
+            r.text = ""
+
+
+def _docx_replace_everywhere(doc, mapping: Dict[str, str]):
+    for p in doc.paragraphs:
+        _docx_replace_in_paragraph(p, mapping)
+    for t in doc.tables:
+        for row in t.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    _docx_replace_in_paragraph(p, mapping)
+
+
+def generate_receituario_docx_bytes(data: Dict[str, Any], template_file: Optional[io.BytesIO] = None) -> bytes:
+    """Gera DOCX preenchido a partir do template."""
+    from docx import Document  # lazy import
+
+    # Carrega template
+    if template_file is not None:
+        doc = Document(template_file)
+    else:
+        base_dir = os.path.dirname(__file__) if "__file__" in globals() else "."
+        path = os.path.join(base_dir, TEMPLATE_RX_DOCX_DEFAULT)
+        doc = Document(path)
+
+    # 1) Preenchimentos diretos
+    mapping = {
+        "[NOME COMPLETO]": data.get("patient_nome", ""),
+        "[DD/MM/AAAA]": data.get("patient_nasc", ""),
+        "[WhatsApp]": data.get("patient_whats", ""),
+        "[E-mail]": data.get("patient_email", ""),
+        "[DATA DA SESSÃO]": data.get("sessao_data", ""),
+        "[QUEIXA PRINCIPAL]": data.get("queixa", ""),
+        "[FOCO 1]": "",
+        "[FOCO 2]": "",
+        "[FOCO 3]": "",
+        "[Ex.: regular sistema nervoso autônomo (ansiedade, ruminação, tensão).]": data.get("objetivos_txt", ""),
+        "[Ex.: 6 sessões em 6–8 semanas (1/semana).]": data.get("sessoes_txt", ""),
+        "[Ex.: Theta 6 Hz 15 min → Alpha 10 Hz 10 min.]": data.get("binaural_txt", ""),
+        "[Cama de Cristal]": data.get("cama_txt", ""),
+        "[Fitoenergética / ervas]": data.get("fito_txt", ""),
+        "[Cristais sugeridos]": data.get("cristais_txt", ""),
+        "[Cuidados]": data.get("cuidados_txt", ""),
+    }
+
+    # Focos (top 3)
+    focus = data.get("focus") or []
+    for i in range(3):
+        if i < len(focus):
+            d, sc = focus[i]
+            mapping[f"[FOCO {i+1}]"] = f"{_DOMAIN_LABEL.get(d, d)} ({float(sc):.1f}%)"
+        else:
+            mapping[f"[FOCO {i+1}]"] = ""
+
+    _docx_replace_everywhere(doc, mapping)
+
+    # 2) Scores: tabela com [__]
+    scores = data.get("scores") or {}
+    try:
+        # tabela de domínios é a 3ª (índice 2) no template
+        t = doc.tables[2]
+        # linhas 1..7
+        for ri in range(1, min(len(t.rows), 8)):
+            dom = list(_DOMAIN_LABEL.keys())[ri-1]
+            val = scores.get(dom, "")
+            # coluna 1
+            cell = t.rows[ri].cells[1]
+            # substitui qualquer [__] que existir
+            for p in cell.paragraphs:
+                _docx_replace_in_paragraph(p, {"[__]": f"{val}%" if val != "" else ""})
+    except Exception:
+        pass
+
+    # 3) Binaural / Frequências auxiliares: tabela 4 (índice 4)
+    try:
+        t = doc.tables[4]
+        # expected rows: Carrier, Beat, Duração, Frequências auxiliares
+        # As células de valor têm [___]
+        # Vamos preencher pelo texto da primeira coluna
+        binaural_txt = data.get("binaural_txt", "")
+        # tentar extrair carrier/beat/dur do texto, mas se não, preencher tudo no primeiro
+        carrier_val = ""
+        beat_val = ""
+        dur_val = ""
+        if binaural_txt:
+            # formatos: Carrier 220 Hz | Beat 10.0 Hz | Duração 2 min
+            m = re.search(r"Carrier\s+([0-9.]+)\s*Hz", binaural_txt)
+            if m: carrier_val = f"{float(m.group(1)):.0f} Hz"
+            m = re.search(r"Beat\s+([0-9.]+)\s*Hz", binaural_txt)
+            if m: beat_val = f"{float(m.group(1)):.1f} Hz"
+            m = re.search(r"Duração\s+(.+?)(\n|$)", binaural_txt)
+            if m: dur_val = m.group(1).strip()
+        freq_aux = data.get("freq_aux_txt", "")
+
+        for row in t.rows[1:]:
+            label = (row.cells[0].text or "").lower()
+            cell = row.cells[1]
+            repl = {}
+            if "carrier" in label:
+                repl["[___]"] = carrier_val
+            elif "beat" in label or "batida" in label:
+                repl["[___]"] = beat_val
+            elif "duração" in label or "duracao" in label:
+                repl["[___]"] = dur_val
+            elif "auxiliares" in label:
+                repl["[___]"] = freq_aux
+            if repl:
+                for p in cell.paragraphs:
+                    _docx_replace_in_paragraph(p, repl)
+    except Exception:
+        pass
+
+    # 4) Sessões: tabela 5 (índice 5) — até 8 linhas
+    try:
+        t = doc.tables[5]
+        rows = data.get("sess_rows") or []
+        for i in range(1, min(len(t.rows), 9)):
+            # i-1 é índice em rows
+            if i-1 < len(rows):
+                r = rows[i-1]
+                n = str(r.get("n") or i)
+                d = str(r.get("data") or "")
+                s = str(r.get("status") or "")
+            else:
+                n, d, s = "", "", ""
+            # col0 [1], col1 [DATA], col2 [Status]
+            for p in t.rows[i].cells[0].paragraphs:
+                _docx_replace_in_paragraph(p, {f"[{i}]": n})
+            for p in t.rows[i].cells[1].paragraphs:
+                _docx_replace_in_paragraph(p, {"[DATA]": d})
+            for p in t.rows[i].cells[2].paragraphs:
+                _docx_replace_in_paragraph(p, {"[Status]": s})
+    except Exception:
+        pass
+
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+def generate_receituario_pdf_bytes(data: Dict[str, Any]) -> bytes:
+    """Gera um PDF simples (A4) com as mesmas informações do receituário."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.5*cm, rightMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph("Receituário / Orientações de Atendimento", styles["Title"]))
+    story.append(Spacer(1, 8))
+
+    patient_line = f"<b>Paciente:</b> {data.get('patient_nome','')} &nbsp;&nbsp; <b>Nasc.:</b> {data.get('patient_nasc','')}"
+    contact_line = f"<b>WhatsApp:</b> {data.get('patient_whats','')} &nbsp;&nbsp; <b>E-mail:</b> {data.get('patient_email','')}"
+    story.append(Paragraph(patient_line, styles["Normal"]))
+    story.append(Paragraph(contact_line, styles["Normal"]))
+    story.append(Paragraph(f"<b>Data:</b> {data.get('sessao_data','')}", styles["Normal"]))
+    story.append(Spacer(1, 8))
+
+    story.append(Paragraph(f"<b>Queixa principal:</b> {data.get('queixa','')}", styles["Normal"]))
+    story.append(Spacer(1, 8))
+
+    # Scores
+    scores = data.get("scores") or {}
+    score_rows = [["Domínio", "Score"]]
+    for dom in DOMAINS:
+        score_rows.append([_DOMAIN_LABEL.get(dom, dom), f"{scores.get(dom,'')}%"])
+    tbl = Table(score_rows, hAlign="LEFT", colWidths=[8*cm, 3*cm])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+        ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+    ]))
+    story.append(Paragraph("<b>Pontuações (anamnese):</b>", styles["Normal"]))
+    story.append(tbl)
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("<b>Objetivos terapêuticos:</b>", styles["Normal"]))
+    story.append(Paragraph(data.get("objetivos_txt","").replace("\n","<br/>"), styles["Normal"]))
+    story.append(Spacer(1, 8))
+
+    if data.get("sessoes_txt"):
+        story.append(Paragraph(f"<b>Plano de sessões:</b> {data.get('sessoes_txt','')}", styles["Normal"]))
+        story.append(Spacer(1, 8))
+
+    if data.get("binaural_txt"):
+        story.append(Paragraph("<b>Binaural (em casa ou na sessão):</b>", styles["Normal"]))
+        story.append(Paragraph(data.get("binaural_txt","").replace("\n","<br/>"), styles["Normal"]))
+        story.append(Spacer(1, 6))
+
+    if data.get("freq_aux_txt"):
+        story.append(Paragraph(f"<b>Frequências auxiliares (codes):</b> {data.get('freq_aux_txt','')}", styles["Normal"]))
+        story.append(Spacer(1, 6))
+
+    if data.get("cama_txt"):
+        story.append(Paragraph("<b>Cama de cristal (sugestão):</b>", styles["Normal"]))
+        story.append(Paragraph(data.get("cama_txt",""), styles["Normal"]))
+        story.append(Spacer(1, 6))
+
+    if data.get("cristais_txt"):
+        story.append(Paragraph(f"<b>Cristais sugeridos:</b> {data.get('cristais_txt','')}", styles["Normal"]))
+        story.append(Spacer(1, 6))
+
+    if data.get("fito_txt"):
+        story.append(Paragraph("<b>Fitoenergética / ervas (orientação):</b>", styles["Normal"]))
+        story.append(Paragraph(data.get("fito_txt","").replace("\n","<br/>"), styles["Normal"]))
+        story.append(Spacer(1, 6))
+
+    story.append(Paragraph("<b>Cuidados:</b>", styles["Normal"]))
+    story.append(Paragraph(data.get("cuidados_txt","").replace("\n","<br/>"), styles["Normal"]))
+    story.append(Spacer(1, 10))
+
+    # Sessões
+    sess = data.get("sess_rows") or []
+    if sess:
+        sess_tbl = [["#", "Data", "Status"]] + [[str(r.get("n") or ""), r.get("data") or "", r.get("status") or ""] for r in sess]
+        t = Table(sess_tbl, hAlign="LEFT", colWidths=[1*cm, 4*cm, 6*cm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
+            ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ]))
+        story.append(Paragraph("<b>Cronograma de sessões (planejado):</b>", styles["Normal"]))
+        story.append(t)
+
+    doc.build(story)
+    return buf.getvalue()
+
+
 # -------------------------
 # UI helpers
 # -------------------------
@@ -1262,6 +1766,101 @@ with tabs[0]:
             use_container_width=True,
             hide_index=True,
         )
+
+
+        st.subheader("🖨️ Receituário para impressão")
+
+        with st.expander("Gerar receituário (puxa as informações salvas do paciente)", expanded=False):
+            # Escolhe um plano já salvo (último por padrão)
+            try:
+                _plans = list_plans(patient_id)
+            except Exception as e:
+                _plans = []
+                st.warning(f"Não consegui listar planos: {e}")
+
+            if not _plans:
+                st.info("Ainda não há plano salvo para este paciente. Gere um plano e salve antes de imprimir.")
+            else:
+                def _plan_label(p):
+                    dt = p.get("created_at") or (p.get("plan_json") or {}).get("date") or ""
+                    dt = _fmt_date_br(dt) if dt else ""
+                    pid = str(p.get("id") or "")[-6:]
+                    qty = p.get("sessions_qty") or ""
+                    cad = p.get("cadence_days") or ""
+                    extra = f" • {qty} sessões/{cad}d" if qty and cad else ""
+                    return f"{dt or 'sem data'} — Plano {pid}{extra}"
+
+                plan_labels = [_plan_label(p) for p in _plans]
+                idx_default = 0
+                rx_sel = st.selectbox("Plano para imprimir", plan_labels, index=idx_default, key=K("rx", "plan_sel"))
+                plan_idx = plan_labels.index(rx_sel)
+                plan_row = _plans[plan_idx]
+                plan_id = plan_row.get("id")
+
+                # Sessões vinculadas
+                try:
+                    sess_rows = list_sessions_nova(plan_id)
+                except Exception as e:
+                    sess_rows = []
+                    st.warning(f"Não consegui listar sessions_nova: {e}")
+
+                # Dados do paciente
+                pat = get_patient(patient_id) or {"id": patient_id}
+
+                rx_data = _build_receituario_data_from_plan(pat, plan_row, sess_rows)
+
+                st.caption("Dica: mantenha o template DOCX no mesmo diretório do app (Receituario_Claudiafito_Template.docx) ou envie abaixo.")
+                tpl_up = st.file_uploader("Template DOCX (opcional)", type=["docx"], key=K("rx", "tpl"))
+
+                colrx1, colrx2 = st.columns(2)
+                with colrx1:
+                    if st.button("Gerar receituário (DOCX)", use_container_width=True, key=K("rx", "gen_docx")):
+                        try:
+                            tpl_io = io.BytesIO(tpl_up.read()) if tpl_up else None
+                            st.session_state["rx_docx_bytes"] = generate_receituario_docx_bytes(rx_data, template_file=tpl_io)
+                            st.success("DOCX gerado.")
+                        except Exception as e:
+                            st.error(f"Erro ao gerar DOCX: {e}")
+
+                with colrx2:
+                    if st.button("Gerar receituário (PDF)", use_container_width=True, key=K("rx", "gen_pdf")):
+                        try:
+                            st.session_state["rx_pdf_bytes"] = generate_receituario_pdf_bytes(rx_data)
+                            st.success("PDF gerado.")
+                        except Exception as e:
+                            st.error(f"Erro ao gerar PDF: {e}")
+
+                dcol1, dcol2 = st.columns(2)
+                with dcol1:
+                    if st.session_state.get("rx_docx_bytes"):
+                        st.download_button(
+                            "⬇️ Baixar DOCX preenchido",
+                            data=st.session_state["rx_docx_bytes"],
+                            file_name=f"receituario_{(pat.get('nome') or 'paciente').strip().replace(' ','_')}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True,
+                            key=K("rx", "dl_docx"),
+                        )
+                with dcol2:
+                    if st.session_state.get("rx_pdf_bytes"):
+                        st.download_button(
+                            "⬇️ Baixar PDF",
+                            data=st.session_state["rx_pdf_bytes"],
+                            file_name=f"receituario_{(pat.get('nome') or 'paciente').strip().replace(' ','_')}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key=K("rx", "dl_pdf"),
+                        )
+
+                with st.expander("Prévia do que vai no receituário", expanded=False):
+                    st.write("Paciente:", rx_data.get("patient_nome"))
+                    st.write("Queixa:", rx_data.get("queixa"))
+                    st.write("Foco:", rx_data.get("focus"))
+                    st.write("Binaural:", rx_data.get("binaural_txt"))
+                    st.write("Frequências auxiliares:", rx_data.get("freq_aux_txt"))
+                    st.write("Cama de cristal:", rx_data.get("cama_txt"))
+                    st.write("Cristais:", rx_data.get("cristais_txt"))
+                    st.write("Fito:", rx_data.get("fito_txt"))
 
         b1, b2 = st.columns(2)
         with b1:
