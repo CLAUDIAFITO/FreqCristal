@@ -4,5 +4,6 @@ supabase==2.4.6
 streamlit>=1.36
 psycopg2-binary>=2.9
 pandas>=2.0
-
+reportlab>=4.0,<5
+openpyxl
 
