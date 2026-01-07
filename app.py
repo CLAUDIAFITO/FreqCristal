@@ -16,6 +16,14 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+# --- Optional dependency: reportlab (PDF)
+try:
+    import reportlab  # type: ignore
+    HAS_REPORTLAB = True
+except Exception:
+    HAS_REPORTLAB = False
+
+
 # -----------------------------
 # Config
 # -----------------------------
@@ -1153,6 +1161,9 @@ def generate_receituario_docx_bytes(data: Dict[str, Any], template_file: Optiona
 
 def generate_receituario_pdf_bytes(data: Dict[str, Any]) -> bytes:
     """Gera um PDF simples (A4) com as mesmas informações do receituário."""
+    if not HAS_REPORTLAB:
+        raise RuntimeError("PDF indisponível: dependência 'reportlab' não está instalada. Baixe o DOCX (imprimível) ou adicione 'reportlab' ao requirements.txt.")
+
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
     from reportlab.lib.styles import getSampleStyleSheet
@@ -1627,11 +1638,40 @@ with tabs[0]:
             atend_date = st.date_input("Data", value=date.today(), key=K("att", "date"))
 
         st.markdown("**Anamnese (0–4)**")
+
+        # Perguntas separadas por abas (por domínio) para facilitar visualização/foco
+        q_by_domain = {d: [q for q in QUESTIONS if q.get("domain") == d] for d in DOMAINS}
+
+        tab_labels = [
+            _DOMAIN_LABEL.get("sono", "Sono"),
+            _DOMAIN_LABEL.get("ansiedade", "Ansiedade"),
+            _DOMAIN_LABEL.get("humor_baixo", "Humor baixo"),
+            _DOMAIN_LABEL.get("exaustao", "Exaustão"),
+            _DOMAIN_LABEL.get("pertencimento", "Pertencimento"),
+            _DOMAIN_LABEL.get("tensao", "Tensão"),
+            _DOMAIN_LABEL.get("ruminacao", "Ruminação"),
+        ]
+        tab_domains = ["sono", "ansiedade", "humor_baixo", "exaustao", "pertencimento", "tensao", "ruminacao"]
+
+        an_tabs = st.tabs(tab_labels)
+
         answers: Dict[str, int] = {}
-        cols = st.columns(2)
-        for i, q in enumerate(QUESTIONS):
-            with cols[i % 2]:
-                answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=K("att", q["id"]))
+        for _tab, _dom in zip(an_tabs, tab_domains):
+            with _tab:
+                cols_q = st.columns(2)
+                qs = q_by_domain.get(_dom, [])
+                for i, q in enumerate(qs):
+                    with cols_q[i % 2]:
+                        answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=K("att", q["id"]))
+
+        # Garantia (caso a lista de perguntas mude no futuro)
+        for q in QUESTIONS:
+            kq = K("att", q["id"])
+            if q["id"] not in answers:
+                try:
+                    answers[q["id"]] = int(st.session_state.get(kq, 0))
+                except Exception:
+                    answers[q["id"]] = 0
 
         st.markdown("**Sinais de atenção**")
         flags: Dict[str, bool] = {}
@@ -1703,18 +1743,106 @@ with tabs[0]:
                     proto_binaural_rows.append({"protocolo": pname, "binaural": str(b)})
 
         extra_freq_details = get_frequencies_by_codes(extra_freq_codes)
-
+        # -------------------------
+        # Resumo em grids (Scores / Foco / Sessões / Protocolos / Plano)
+        # -------------------------
         st.divider()
         left, right = st.columns(2)
+
+        # Scores (grid)
+        df_scores = pd.DataFrame(
+            [{"domínio": _DOMAIN_LABEL.get(k, k), "score_%": v} for k, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
+        )
+
+        # Foco (grid)
+        df_focus = pd.DataFrame(
+            [
+                {
+                    "prioridade": i + 1,
+                    "domínio": _DOMAIN_LABEL.get(d, d),
+                    "score_%": float(sc),
+                    "protocolo_sugerido": DOMAIN_TO_PROTOCOL.get(d, "") or "",
+                }
+                for i, (d, sc) in enumerate(focus or [])
+            ]
+        )
+
+        # Sessões sugeridas (grid)
+        try:
+            semanas_est = max(1, int(math.ceil((int(qty) * int(cadence)) / 7)))
+        except Exception:
+            semanas_est = ""
+        dt_ini = _fmt_date_br(scripts[0]["scheduled_date"]) if scripts else ""
+        dt_fim = _fmt_date_br(scripts[-1]["scheduled_date"]) if scripts else ""
+        df_sessoes = pd.DataFrame(
+            [
+                {
+                    "qtd_sessões": qty,
+                    "cadência_dias": cadence,
+                    "duração_estimada_semanas": semanas_est,
+                    "início_previsto": dt_ini,
+                    "fim_previsto": dt_fim,
+                }
+            ]
+        )
+
+        # Protocolos (grid)
+        prot_rows = []
+        for name in (selected_names or []):
+            c = (protocols.get(name, {}) or {}).get("content", {}) or {}
+            prot_rows.append(
+                {
+                    "protocolo": name,
+                    "domínio": (protocols.get(name, {}) or {}).get("domain") or "",
+                    "tem_cama_cristal": bool(c.get("cama_cristal") or c.get("cama")),
+                    "tem_binaural": bool(c.get("binaural")),
+                    "tem_cristais": bool(c.get("cristais")),
+                    "tem_fito": bool(c.get("fito")),
+                }
+            )
+        df_protocolos = pd.DataFrame(prot_rows) if prot_rows else pd.DataFrame(columns=["protocolo", "domínio"])
+
+        # Plano consolidado (grid)
+        def _items_txt(x):
+            return _join_list(x, sep="; ")
+
+        plan_rows = [
+            {"categoria": "Chakras prioritários", "itens": _items_txt(plan.get("chakras_prioritarios"))},
+            {"categoria": "Emoções prioritárias", "itens": _items_txt(plan.get("emocoes_prioritarias"))},
+            {"categoria": "Cristais sugeridos", "itens": _items_txt(plan.get("cristais_sugeridos"))},
+            {"categoria": "Fito sugerida", "itens": _items_txt(plan.get("fito_sugerida"))},
+            {"categoria": "Alertas / cuidados do protocolo", "itens": _items_txt(plan.get("alertas"))},
+        ]
+        df_plano = pd.DataFrame(plan_rows)
+
         with left:
-            df = pd.DataFrame([{"dominio": k, "score": v} for k, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)])
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            st.write("Foco:", focus)
-            st.write("Sessões sugeridas:", {"qty": qty, "cadence_days": cadence})
-            st.write("Frequências extras:", extra_freq_codes)
+            st.markdown("### Pontuações / Foco / Sessões sugeridas")
+            st.dataframe(df_scores, use_container_width=True, hide_index=True)
+
+            st.markdown("**Foco (Top 3)**")
+            if not df_focus.empty:
+                st.dataframe(df_focus, use_container_width=True, hide_index=True)
+            else:
+                st.caption("—")
+
+            st.markdown("**Sessões sugeridas**")
+            st.dataframe(df_sessoes, use_container_width=True, hide_index=True)
+
+            st.markdown("**Frequências extras (codes)**")
+            if extra_freq_codes:
+                st.dataframe(pd.DataFrame([{"code": c} for c in extra_freq_codes]), use_container_width=True, hide_index=True)
+            else:
+                st.caption("Sem frequências extras selecionadas.")
+
         with right:
-            st.write("Protocolos:", selected_names)
-            st.write("Plano consolidado:", plan)
+            st.markdown("### Protocolos e plano consolidado")
+            if not df_protocolos.empty:
+                st.dataframe(df_protocolos, use_container_width=True, hide_index=True)
+            else:
+                st.caption("—")
+
+            st.markdown("**Plano consolidado (resumo)**")
+            st.dataframe(df_plano, use_container_width=True, hide_index=True)
 
             st.markdown("### Sugestão — Cama de Cristal")
             st.write("Chakras prioritários:", plan.get("chakras_prioritarios") or [])
@@ -1732,16 +1860,21 @@ with tabs[0]:
             bt_now = abs(float(beat_now))
             fL_now = max(20.0, carrier_now - bt_now / 2.0)
             fR_now = carrier_now + bt_now / 2.0
-            st.write(
-                {
-                    "binaural_atual": {
-                        "carrier_hz": carrier_now,
-                        "beat_hz": beat_now,
-                        "duracao_s": dur_now,
-                        "L": round(fL_now, 2),
-                        "R": round(fR_now, 2),
-                    }
-                }
+
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "carrier_hz": carrier_now,
+                            "beat_hz": beat_now,
+                            "duracao_s": dur_now,
+                            "L_hz": round(fL_now, 2),
+                            "R_hz": round(fR_now, 2),
+                        }
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
             )
 
             if proto_binaural_rows:
@@ -1752,13 +1885,12 @@ with tabs[0]:
 
             if extra_freq_codes:
                 st.caption("Frequências extras selecionadas (aba Binaural):")
-                st.write(extra_freq_codes)
                 if extra_freq_details:
                     df_fd = pd.DataFrame(extra_freq_details)
                     pref_cols = [c for c in ["code", "nome", "hz", "tipo", "chakra", "cor", "descricao"] if c in df_fd.columns]
                     st.dataframe(df_fd[pref_cols] if pref_cols else df_fd, use_container_width=True, hide_index=True)
-            else:
-                st.caption("Sem frequências extras selecionadas.")
+                else:
+                    st.write(extra_freq_codes)
 
             st.write("Áudio (binaural):", audio_block["binaural"])
 
@@ -1844,7 +1976,7 @@ with tabs[0]:
                             key=K("rx", "dl_docx"),
                         )
                 with dcol2:
-                    if st.session_state.get("rx_pdf_bytes"):
+                    if HAS_REPORTLAB and st.session_state.get("rx_pdf_bytes"):
                         st.download_button(
                             "⬇️ Baixar PDF",
                             data=st.session_state["rx_pdf_bytes"],
