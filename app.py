@@ -293,6 +293,8 @@ def build_session_scripts(
                 "status": "AGENDADA",
                 "audio": audio_block,
                 "frequencias": [{"code": c} for c in extra_freq_codes],
+                        "cama_cristal_sugestao": cama_rows,
+                        "binaural_protocolos_sugestao": proto_binaural_rows,
                 "parts": parts,
             }
         )
@@ -561,6 +563,147 @@ def insert_session_nova(plan_id: str, patient_id: str, session_n: int, scheduled
 
 
 # -------------------------
+# HISTÓRICO: intakes / plans (para analisar e reaproveitar anamnese salva)
+# -------------------------
+def _as_dict(x):
+    if x is None:
+        return {}
+    if isinstance(x, dict):
+        return x
+    if isinstance(x, str):
+        try:
+            return json.loads(x)
+        except Exception:
+            return {}
+    return {}
+
+def list_intakes(patient_id: str, limit: int = 30) -> List[Dict[str, Any]]:
+    """Lista anamneses do paciente (mais recentes primeiro)."""
+    if BACKEND == "postgres":
+        return qall(
+            """select id, created_at, complaint, answers_json, scores_json, flags_json, notes
+                 from public.intakes
+                where patient_id=%s
+                order by created_at desc
+                limit %s""",
+            (patient_id, limit),
+        )
+    return sb_select(
+        "intakes",
+        columns="id,created_at,complaint,answers_json,scores_json,flags_json,notes",
+        eq={"patient_id": patient_id},
+        order=("created_at", False),
+        limit=limit,
+    )
+
+def list_plans(patient_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Lista planos gerados do paciente (mais recentes primeiro)."""
+    if BACKEND == "postgres":
+        return qall(
+            """select id, created_at, sessions_qty, cadence_days, selected_protocols, focus_json, plan_json
+                 from public.plans
+                where patient_id=%s
+                order by created_at desc
+                limit %s""",
+            (patient_id, limit),
+        )
+    return sb_select(
+        "plans",
+        columns="id,created_at,sessions_qty,cadence_days,selected_protocols,focus_json,plan_json",
+        eq={"patient_id": patient_id},
+        order=("created_at", False),
+        limit=limit,
+    )
+
+def list_sessions_nova(plan_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    if BACKEND == "postgres":
+        return qall(
+            """select id, session_n, scheduled_date, status, script_json, created_at
+                 from public.sessions_nova
+                where plan_id=%s
+                order by session_n asc
+                limit %s""",
+            (plan_id, limit),
+        )
+    return sb_select(
+        "sessions_nova",
+        columns="id,session_n,scheduled_date,status,script_json,created_at",
+        eq={"plan_id": plan_id},
+        order=("session_n", True),
+        limit=limit,
+    )
+
+def apply_intake_to_form(intake_row: Dict[str, Any]):
+    """Carrega uma anamnese salva para dentro do formulário (sliders/checkboxes)."""
+    ans = _as_dict(intake_row.get("answers_json"))
+    flg = _as_dict(intake_row.get("flags_json"))
+    st.session_state[K("att", "complaint")] = (intake_row.get("complaint") or "") if intake_row else ""
+    st.session_state[K("att", "notes")] = (intake_row.get("notes") or "") if intake_row else ""
+    if intake_row and intake_row.get("id"):
+        st.session_state["last_intake_id"] = intake_row["id"]
+
+    for q in QUESTIONS:
+        k = K("att", q["id"])
+        v = ans.get(q["id"], 0)
+        try:
+            st.session_state[k] = int(v)
+        except Exception:
+            st.session_state[k] = 0
+
+    for f in FLAGS:
+        k = K("att", f["id"])
+        st.session_state[k] = bool(flg.get(f["id"], False))
+
+def reset_att_form_state():
+    """Evita 'vazar' estado de um paciente para outro."""
+    st.session_state.pop("last_intake_id", None)
+    st.session_state[K("att", "complaint")] = ""
+    st.session_state[K("att", "notes")] = ""
+    for q in QUESTIONS:
+        st.session_state[K("att", q["id"])] = 0
+    for f in FLAGS:
+        st.session_state[K("att", f["id"])] = False
+
+
+def get_frequencies_by_codes(codes: List[str]) -> List[Dict[str, Any]]:
+    """Busca detalhes de frequencies pelo code (para mostrar na aba Atendimento)."""
+    codes = [str(c).strip().upper() for c in (codes or []) if str(c).strip()]
+    if not codes:
+        return []
+    # dedupe mantendo ordem
+    seen = set()
+    codes = [c for c in codes if not (c in seen or seen.add(c))]
+
+    if BACKEND == "postgres":
+        try:
+            rows = qall(
+                "select code, nome, hz, tipo, chakra, cor, descricao from public.frequencies where upper(code) = any(%s)",
+                (codes,),
+            )
+            return rows or []
+        except Exception:
+            # fallback: carrega tudo e filtra
+            try:
+                all_rows = load_frequencies(None)
+                s = set(codes)
+                return [r for r in (all_rows or []) if str(r.get("code") or "").strip().upper() in s]
+            except Exception:
+                return []
+
+    # supabase
+    try:
+        res = sb.table("frequencies").select("code,nome,hz,tipo,chakra,cor,descricao").in_("code", codes).execute()
+        return res.data or []
+    except Exception:
+        try:
+            all_rows = sb_select("frequencies", columns="code,nome,hz,tipo,chakra,cor,descricao", order=("code", True))
+            s = set(codes)
+            return [r for r in (all_rows or []) if str(r.get("code") or "").strip().upper() in s]
+        except Exception:
+            return []
+
+
+# -------------------------
 # UI helpers
 # -------------------------
 def K(*parts: str) -> str:
@@ -818,6 +961,110 @@ with tabs[0]:
         st.info("Selecione ou crie um paciente na sidebar.")
         st.stop()
 
+# --- ao trocar de paciente, reseta para não misturar dados ---
+if st.session_state.get("__att_patient_loaded") != patient_id:
+    reset_att_form_state()
+    st.session_state["__att_patient_loaded"] = patient_id
+
+# --- histórico do paciente (ver / carregar anamnese salva) ---
+with st.expander("📚 Histórico do paciente (anamneses e planos)", expanded=True):
+    # Anamneses
+    try:
+        intakes_hist = list_intakes(patient_id, limit=30)
+    except Exception as e:
+        intakes_hist = []
+        st.warning(f"Não consegui carregar anamneses: {e}")
+
+    if not intakes_hist:
+        st.info("Sem anamneses registradas para este paciente ainda.")
+    else:
+        rows = []
+        for r in intakes_hist:
+            scores = _as_dict(r.get("scores_json"))
+            top = sorted(scores.items(), key=lambda x: float(x[1]) if isinstance(x[1], (int, float)) else 0.0, reverse=True)[:3]
+            top_s = ", ".join([f"{k}:{float(v):.0f}%" if isinstance(v, (int, float)) else f"{k}:{v}" for k, v in top]) if top else ""
+            rows.append({
+                "quando": str(r.get("created_at") or "")[:19],
+                "queixa": (r.get("complaint") or ""),
+                "top_scores": top_s,
+                "id": str(r.get("id") or "")[-6:],
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        opts = []
+        for r in intakes_hist:
+            when = str(r.get("created_at") or "")[:10]
+            cid = str(r.get("id") or "")[-4:]
+            comp = (r.get("complaint") or "—")
+            comp = comp if len(comp) <= 60 else comp[:57] + "..."
+            opts.append(f"{when} • {comp} • {cid}")
+
+        sel_i = st.selectbox(
+            "Escolha uma anamnese para ver detalhes / carregar no formulário",
+            opts,
+            key=K("hist", "intake_sel"),
+        )
+        sel_idx = opts.index(sel_i)
+        rsel = intakes_hist[sel_idx]
+
+        d1, d2 = st.columns(2)
+        with d1:
+            st.markdown("**Scores**")
+            sc = _as_dict(rsel.get("scores_json"))
+            if sc:
+                sdf = pd.DataFrame([{"dominio": k, "score": v} for k, v in sorted(sc.items(), key=lambda x: x[1], reverse=True)])
+                st.dataframe(sdf, use_container_width=True, hide_index=True)
+            else:
+                st.caption("—")
+        with d2:
+            st.markdown("**Flags / notas**")
+            st.write(_as_dict(rsel.get("flags_json")) or "—")
+            if (rsel.get("notes") or ""):
+                st.write(rsel.get("notes"))
+
+        bcolA, bcolB = st.columns(2)
+        if bcolA.button("Carregar esta anamnese no formulário", type="primary", use_container_width=True, key=K("hist", "load_intake")):
+            apply_intake_to_form(rsel)
+            st.success("Anamnese carregada no formulário.")
+            st.rerun()
+
+        if bcolB.button("Limpar formulário", use_container_width=True, key=K("hist", "clear_form")):
+            reset_att_form_state()
+            st.success("Formulário limpo.")
+            st.rerun()
+
+    # Planos
+    st.divider()
+    st.markdown("**Planos gerados (sessions_nova)**")
+    try:
+        plans_hist = list_plans(patient_id, limit=10)
+    except Exception as e:
+        plans_hist = []
+        st.warning(f"Não consegui carregar planos: {e}")
+
+    if not plans_hist:
+        st.caption("Nenhum plano gerado ainda.")
+    else:
+        p0 = plans_hist[0]
+        st.write(
+            f"Último plano: {str(p0.get('created_at') or '')[:19]} • sessões={p0.get('sessions_qty')} • cadência={p0.get('cadence_days')} dias"
+        )
+
+        try:
+            sess = list_sessions_nova(p0.get("id"), limit=50)
+        except Exception as e:
+            sess = []
+            st.caption(f"Não consegui ler sessions_nova: {e}")
+
+        if sess:
+            st.dataframe(
+                pd.DataFrame([{"n": r.get("session_n"), "data": r.get("scheduled_date"), "status": r.get("status")} for r in sess]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption("Sem sessões_nova para o último plano (ou tabela ainda não criada).")
+
     col1, col2 = st.columns([2, 1])
     with col1:
         complaint = st.text_input("Queixa principal (curta)", key=K("att", "complaint"))
@@ -868,6 +1115,40 @@ with tabs[0]:
 
     scripts = build_session_scripts(qty, cadence, focus, selected_names, protocols, audio_block, extra_freq_codes)
 
+    # -------------------------
+    # Sugestões (Atendimento): Cama de Cristal + Frequências
+    # -------------------------
+    cama_rows: List[Dict[str, Any]] = []
+    proto_binaural_rows: List[Dict[str, Any]] = []
+
+    for pname in selected_names:
+        c = (protocols.get(pname, {}) or {}).get("content", {}) or {}
+
+        cama = c.get("cama_cristal")
+        if cama is None:
+            cama = c.get("cama")
+        if cama is not None:
+            cama_rows.append(
+                {
+                    "protocolo": pname,
+                    "cama_cristal": cama if isinstance(cama, str) else json.dumps(cama, ensure_ascii=False),
+                }
+            )
+
+        b = c.get("binaural")
+        if b:
+            if isinstance(b, dict):
+                row = {"protocolo": pname}
+                # campos comuns
+                for k in ["carrier_hz", "beat_hz", "duracao_s", "duracao_min", "obs", "nota"]:
+                    if k in b:
+                        row[k] = b.get(k)
+                proto_binaural_rows.append(row)
+            else:
+                proto_binaural_rows.append({"protocolo": pname, "binaural": str(b)})
+
+    extra_freq_details = get_frequencies_by_codes(extra_freq_codes)
+
     st.divider()
     left, right = st.columns(2)
     with left:
@@ -879,6 +1160,51 @@ with tabs[0]:
     with right:
         st.write("Protocolos:", selected_names)
         st.write("Plano consolidado:", plan)
+
+        st.markdown("### Sugestão — Cama de Cristal")
+        st.write("Chakras prioritários:", plan.get("chakras_prioritarios") or [])
+        st.write("Cristais sugeridos:", plan.get("cristais_sugeridos") or [])
+        st.write("Fito sugerida:", plan.get("fito_sugerida") or [])
+        if cama_rows:
+            st.dataframe(pd.DataFrame(cama_rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Nenhum plano de cama_cristal cadastrado nos protocolos selecionados.")
+
+        st.markdown("### Sugestão — Frequências")
+        carrier_now = float(st.session_state.get(KEY_CARRIER, 220.0))
+        beat_now = float(st.session_state.get(KEY_BEAT, 10.0))
+        dur_now = int(st.session_state.get(KEY_DUR_S, 120))
+        bt_now = abs(float(beat_now))
+        fL_now = max(20.0, carrier_now - bt_now / 2.0)
+        fR_now = carrier_now + bt_now / 2.0
+        st.write(
+            {
+                "binaural_atual": {
+                    "carrier_hz": carrier_now,
+                    "beat_hz": beat_now,
+                    "duracao_s": dur_now,
+                    "L": round(fL_now, 2),
+                    "R": round(fR_now, 2),
+                }
+            }
+        )
+
+        if proto_binaural_rows:
+            st.caption("Binaural sugerido pelos protocolos selecionados (se cadastrado):")
+            st.dataframe(pd.DataFrame(proto_binaural_rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Sem binaural sugerido cadastrado nos protocolos selecionados.")
+
+        if extra_freq_codes:
+            st.caption("Frequências extras selecionadas (aba Binaural):")
+            st.write(extra_freq_codes)
+            if extra_freq_details:
+                df_fd = pd.DataFrame(extra_freq_details)
+                pref_cols = [c for c in ["code", "nome", "hz", "tipo", "chakra", "cor", "descricao"] if c in df_fd.columns]
+                st.dataframe(df_fd[pref_cols] if pref_cols else df_fd, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Sem frequências extras selecionadas.")
+
         st.write("Áudio (binaural):", audio_block["binaural"])
 
     st.subheader("Sessões pré-definidas")
@@ -922,6 +1248,8 @@ with tabs[0]:
                         "plan": plan,
                         "audio": audio_block,
                         "frequencias": [{"code": c} for c in extra_freq_codes],
+                        "cama_cristal_sugestao": cama_rows,
+                        "binaural_protocolos_sugestao": proto_binaural_rows,
                     },
                 )
                 for s in scripts:
