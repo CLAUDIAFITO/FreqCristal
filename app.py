@@ -1904,8 +1904,8 @@ KEY_DUR_S   = K("binaural", "dur_s")
 KEY_BG_GAIN = K("binaural", "bg_gain")
 KEY_TONE_GAIN = K("binaural", "tone_gain")
 
-st.title("claudiafito_v2 — Atendimento + Binaural (como no app antigo)")
-st.caption("Inclui presets Gamma/Theta/Alpha/Delta, Solfeggio, Chakras, Tocar/Parar e upload de música de fundo do computador.")
+st.title("SISTEMA INTEGRADO DE FREQUENCIAS ENERGÉTICAS")
+st.caption("Geração de Planos Terapêuticos integrados utilizando terapias: Fitoterapia, Frequnciais Solfeggios e Binaurais, Cromoterapia e Cristaloterapia.")
 
 tabs = st.tabs(["Atendimento", "Binaural"])
 
