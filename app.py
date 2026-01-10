@@ -168,6 +168,115 @@ def compute_scores(answers: Dict[str, int]) -> Dict[str, float]:
     return {d: round((sums[d] / maxs[d] * 100.0) if maxs[d] else 0.0, 1) for d in DOMAINS}
 
 
+
+def adjust_scores_with_phys(scores: Dict[str, int], phys_meta: Dict[str, Any]) -> Tuple[Dict[str, int], Dict[str, Any]]:
+    """Ajustes leves de score com base em dor/contexto (sem 'diagnosticar').
+
+    Retorna: (scores_ajustados, contexto) onde contexto inclui alertas/tags.
+    """
+    out = {k: int(v or 0) for k, v in (scores or {}).items()}
+    ctx_alertas: List[str] = []
+    ctx_tags: List[str] = []
+    ctx_ajustes: List[str] = []
+
+    def clamp100(x: int) -> int:
+        return 0 if x < 0 else (100 if x > 100 else int(x))
+
+    def add(domain: str, delta: int, reason: str = ""):
+        if domain not in out:
+            return
+        before = out[domain]
+        out[domain] = clamp100(before + int(delta))
+        if reason and out[domain] != before:
+            ctx_ajustes.append(f"{domain}: {before}→{out[domain]} ({reason})")
+
+    pm = phys_meta or {}
+
+    # Dor (0–10)
+    dor = pm.get("phys_dor_score")
+    try:
+        dor_i = int(float(dor)) if dor is not None else 0
+    except Exception:
+        dor_i = 0
+
+    if dor_i >= 7:
+        add("tensao", 12, "dor intensa")
+        add("exaustao", 8, "dor intensa")
+        ctx_tags.append("dor_intensa")
+    elif dor_i >= 4:
+        add("tensao", 6, "dor moderada")
+        add("exaustao", 4, "dor moderada")
+        ctx_tags.append("dor_moderada")
+
+    # Emoções (auto-relato)
+    emo = (pm.get("phys_emocoes_lida") or "").strip()
+    if emo == "Guardo pra mim / engulo":
+        add("ruminacao", 6, "tende a engolir emoções")
+        add("ansiedade", 4, "tende a engolir emoções")
+        ctx_tags.append("emocao_internaliza")
+    elif emo == "Explodo / fico irritada":
+        add("ansiedade", 6, "tende a explodir")
+        add("tensao", 4, "tende a explodir")
+        ctx_tags.append("emocao_reatividade")
+    elif emo == "Choro / fico retraída":
+        add("humor_baixo", 4, "tende a retração")
+        ctx_tags.append("emocao_retracao")
+
+    # Conflito familiar
+    conf = (pm.get("phys_conflito_nivel") or "Não").strip()
+    if conf == "Leve":
+        add("pertencimento", 3, "conflito familiar leve")
+        add("ansiedade", 3, "conflito familiar leve")
+        ctx_tags.append("conflito_familiar")
+    elif conf == "Moderado":
+        add("pertencimento", 6, "conflito familiar moderado")
+        add("ansiedade", 6, "conflito familiar moderado")
+        add("ruminacao", 4, "conflito familiar moderado")
+        ctx_tags.append("conflito_familiar")
+    elif conf == "Grave":
+        add("pertencimento", 10, "conflito familiar grave")
+        add("ansiedade", 10, "conflito familiar grave")
+        add("ruminacao", 6, "conflito familiar grave")
+        ctx_tags.append("conflito_familiar")
+
+    # Transtorno alimentar (auto-relato)
+    ta = (pm.get("phys_transt_alim") or "Não").strip()
+    if ta == "Suspeita/Em investigação":
+        add("ansiedade", 6, "transtorno alimentar (suspeita)")
+        add("humor_baixo", 6, "transtorno alimentar (suspeita)")
+        ctx_tags.append("transtorno_alimentar")
+    elif ta == "Sim":
+        add("ansiedade", 10, "transtorno alimentar (sim)")
+        add("humor_baixo", 10, "transtorno alimentar (sim)")
+        ctx_tags.append("transtorno_alimentar")
+
+    # Alertas (sem mexer em score)
+    if (pm.get("phys_alergias") or "Não") == "Sim":
+        quais = (pm.get("phys_alergias_quais") or "").strip()
+        ctx_alertas.append("⚠️ Alergias relatadas" + (f": {quais}" if quais else "."))
+        ctx_tags.append("alergias")
+
+    if (pm.get("phys_cirurgias") or "Não") == "Sim":
+        quais = (pm.get("phys_cirurgias_quais") or "").strip()
+        ctx_alertas.append("⚠️ Cirurgias relatadas" + (f": {quais}" if quais else "."))
+        ctx_tags.append("cirurgias")
+
+    fam = (pm.get("phys_hist_familia") or "").strip()
+    if fam:
+        ctx_alertas.append("ℹ️ Histórico familiar relevante informado.")
+        ctx_tags.append("hist_familiar")
+
+    # Dedup
+    ctx_alertas = list(dict.fromkeys([a for a in ctx_alertas if a]))
+    ctx_tags = list(dict.fromkeys([t for t in ctx_tags if t]))
+
+    contexto = {
+        "alertas": ctx_alertas,
+        "tags": ctx_tags,
+        "ajustes": ctx_ajustes,
+    }
+    return out, contexto
+
 def pick_focus(scores: Dict[str, float], top_n: int = 3) -> List[Tuple[str, float]]:
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
 
@@ -692,32 +801,57 @@ def list_sessions_nova(plan_id: str, limit: int = 50) -> List[Dict[str, Any]]:
     )
 
 def apply_intake_to_form(intake_row: Dict[str, Any]):
-    """Carrega uma anamnese salva para dentro do formulário (sliders/checkboxes)."""
-    ans = _as_dict(intake_row.get("answers_json"))
-    flg = _as_dict(intake_row.get("flags_json"))
-    st.session_state[K("att", "complaint")] = (intake_row.get("complaint") or "") if intake_row else ""
-    st.session_state[K("att", "notes")] = (intake_row.get("notes") or "") if intake_row else ""
-    if intake_row and intake_row.get("id"):
-        st.session_state["last_intake_id"] = intake_row["id"]
-    # --- Anamnese física (detalhes) ---
-    st.session_state[K("att", "phys_dor_local")] = str(ans.get("phys_dor_local") or "")
-    reg = ans.get("phys_dor_regioes")
-    st.session_state[K("att", "phys_dor_regioes")] = reg if isinstance(reg, list) else ([] if not reg else [str(reg)])
-    st.session_state[K("att", "phys_hist")] = str(ans.get("phys_hist") or "")
-    st.session_state[K("att", "phys_meds_txt")] = str(ans.get("phys_meds_txt") or "")
+    # Carrega answers_json p/ o estado do formulário
+    ans = intake_row.get("answers_json") or {}
+    # Campos base
+    st.session_state[K("att", "complaint")] = ans.get("complaint") or intake_row.get("complaint") or ""
+    st.session_state[K("att", "notes")] = ans.get("notes") or intake_row.get("notes") or ""
 
-
+    # Questões 0–4 (mesmas keys do formulário)
     for q in QUESTIONS:
-        k = K("att", q["id"])
-        v = ans.get(q["id"], 0)
-        try:
-            st.session_state[k] = int(v)
-        except Exception:
-            st.session_state[k] = 0
+        key = K("q", q["id"])
+        if key in st.session_state:
+            st.session_state[key] = int(ans.get(key, st.session_state[key]))
+        else:
+            st.session_state[key] = int(ans.get(key, q.get("default", 2)))
 
-    for f in FLAGS:
-        k = K("att", f["id"])
-        st.session_state[k] = bool(flg.get(f["id"], False))
+    # --- Anamnese física (detalhes) ---
+    def _as_list(v):
+        if isinstance(v, list):
+            return v
+        if v in (None, ""):
+            return []
+        return [v]
+
+    def _as_int(v, default=0):
+        try:
+            return int(float(v))
+        except Exception:
+            return default
+
+    st.session_state[K("att", "phys_dor_local")] = ans.get("phys_dor_local", "") or ""
+    st.session_state[K("att", "phys_dor_score")] = _as_int(ans.get("phys_dor_score", 0), 0)
+    st.session_state[K("att", "phys_dor_regioes")] = _as_list(ans.get("phys_dor_regioes"))
+    st.session_state[K("att", "phys_hist")] = ans.get("phys_hist", "") or ""
+    st.session_state[K("att", "phys_meds_txt")] = ans.get("phys_meds_txt", "") or ""
+
+    # Novos campos (contexto emocional + saúde)
+    st.session_state[K("att", "phys_emocoes_lida")] = ans.get("phys_emocoes_lida", "Prefiro não responder") or "Prefiro não responder"
+    st.session_state[K("att", "phys_emocoes_obs")] = ans.get("phys_emocoes_obs", "") or ""
+
+    st.session_state[K("att", "phys_alergias")] = ans.get("phys_alergias", "Não") or "Não"
+    st.session_state[K("att", "phys_alergias_quais")] = ans.get("phys_alergias_quais", "") or ""
+
+    st.session_state[K("att", "phys_cirurgias")] = ans.get("phys_cirurgias", "Não") or "Não"
+    st.session_state[K("att", "phys_cirurgias_quais")] = ans.get("phys_cirurgias_quais", "") or ""
+
+    st.session_state[K("att", "phys_hist_familia")] = ans.get("phys_hist_familia", "") or ""
+
+    st.session_state[K("att", "phys_conflito_nivel")] = ans.get("phys_conflito_nivel", "Não") or "Não"
+    st.session_state[K("att", "phys_conflito_desc")] = ans.get("phys_conflito_desc", "") or ""
+
+    st.session_state[K("att", "phys_transt_alim")] = ans.get("phys_transt_alim", "Não") or "Não"
+    st.session_state[K("att", "phys_transt_alim_desc")] = ans.get("phys_transt_alim_desc", "") or ""
 
 def reset_att_form_state():
     """Evita 'vazar' estado de um paciente para outro."""
@@ -726,9 +860,23 @@ def reset_att_form_state():
     st.session_state[K("att", "notes")] = ""
     # Anamnese física (detalhes)
     st.session_state[K("att", "phys_dor_local")] = ""
+    st.session_state[K("att", "phys_dor_score")] = 0
     st.session_state[K("att", "phys_dor_regioes")] = []
     st.session_state[K("att", "phys_hist")] = ""
     st.session_state[K("att", "phys_meds_txt")] = ""
+    # Novos campos
+    st.session_state[K("att", "phys_emocoes_lida")] = "Prefiro não responder"
+    st.session_state[K("att", "phys_emocoes_obs")] = ""
+    st.session_state[K("att", "phys_alergias")] = "Não"
+    st.session_state[K("att", "phys_alergias_quais")] = ""
+    st.session_state[K("att", "phys_cirurgias")] = "Não"
+    st.session_state[K("att", "phys_cirurgias_quais")] = ""
+    st.session_state[K("att", "phys_hist_familia")] = ""
+    st.session_state[K("att", "phys_conflito_nivel")] = "Não"
+    st.session_state[K("att", "phys_conflito_desc")] = ""
+    st.session_state[K("att", "phys_transt_alim")] = "Não"
+    st.session_state[K("att", "phys_transt_alim_desc")] = ""
+
 
     for q in QUESTIONS:
         st.session_state[K("att", q["id"])] = 0
@@ -1375,7 +1523,7 @@ tabs = st.tabs(["Atendimento", "Binaural"])
 # Shared binaural settings (1 fonte de verdade = os widgets)
 st.session_state.setdefault(KEY_CARRIER, 220.0)
 st.session_state.setdefault(KEY_BEAT, 10.0)
-st.session_state.setdefault(KEY_DUR_S, 1800)     # duração em SEGUNDOS (igual no app antigo)
+st.session_state.setdefault(KEY_DUR_S, 120)     # duração em SEGUNDOS (igual no app antigo)
 st.session_state.setdefault(KEY_BG_GAIN, 0.12)
 st.session_state.setdefault(KEY_TONE_GAIN, 0.30)  # volume do binaural (WebAudio)
 st.session_state.setdefault("extra_freq_codes", [])
@@ -1801,25 +1949,100 @@ with tabs[0]:
 
         
         with st.expander("🩺 Anamnese física (detalhes)", expanded=False):
-            p1, p2 = st.columns(2)
-            dor_local = p1.text_input("Local principal da dor/incômodo (se houver)", key=K("att", "phys_dor_local"))
-            regioes = p2.multiselect("Regiões afetadas", options=PHYS_DOR_REGIOES, key=K("att", "phys_dor_regioes"))
-            hist = st.text_area("Histórico de saúde / cirurgias relevantes", height=80, key=K("att", "phys_hist"))
-            meds_txt = st.text_area("Medicamentos em uso (detalhe)", height=80, key=K("att", "phys_meds_txt"))
+            # Dor / queixas
+            c1, c2 = st.columns(2)
+            with c1:
+                dor_local = st.text_input("Dor / queixa principal (onde dói?)", key=K("att", "phys_dor_local"))
+            with c2:
+                dor_score = st.slider("Intensidade da dor (0=sem dor; 10=máxima)", 0, 10, key=K("att", "phys_dor_score"))
+
+            dor_regioes = st.multiselect("Regiões afetadas (marque se fizer sentido)", PHYS_DOR_REGIOES, key=K("att", "phys_dor_regioes"))
+            hist_txt = st.text_area("Histórico de saúde / cirurgias relevantes", height=80, key=K("att", "phys_hist"))
+            meds_txt = st.text_area("Medicamentos / tratamentos atuais", height=80, key=K("att", "phys_meds_txt"))
+
+            st.markdown("**Aspectos emocionais e contexto**")
+            EMO_OPTS = [
+                "Prefiro não responder",
+                "Guardo pra mim / engulo",
+                "Falo / peço ajuda",
+                "Explodo / fico irritada",
+                "Choro / fico retraída",
+                "Processo com terapia/meditação",
+                "Outro",
+            ]
+            CONFLITO_OPTS = ["Não", "Leve", "Moderado", "Grave"]
+            SIMNAO_OPTS = ["Não", "Sim"]
+            TRANST_ALIM_OPTS = ["Não", "Suspeita/Em investigação", "Sim"]
+
+            # garante valores válidos (evita erro de option mismatch)
+            if st.session_state.get(K("att", "phys_emocoes_lida")) not in EMO_OPTS:
+                st.session_state[K("att", "phys_emocoes_lida")] = EMO_OPTS[0]
+            if st.session_state.get(K("att", "phys_conflito_nivel")) not in CONFLITO_OPTS:
+                st.session_state[K("att", "phys_conflito_nivel")] = CONFLITO_OPTS[0]
+            if st.session_state.get(K("att", "phys_alergias")) not in SIMNAO_OPTS:
+                st.session_state[K("att", "phys_alergias")] = SIMNAO_OPTS[0]
+            if st.session_state.get(K("att", "phys_cirurgias")) not in SIMNAO_OPTS:
+                st.session_state[K("att", "phys_cirurgias")] = SIMNAO_OPTS[0]
+            if st.session_state.get(K("att", "phys_transt_alim")) not in TRANST_ALIM_OPTS:
+                st.session_state[K("att", "phys_transt_alim")] = TRANST_ALIM_OPTS[0]
+
+            d1, d2 = st.columns(2)
+            with d1:
+                emocoes = st.selectbox("Como você lida com suas emoções?", EMO_OPTS, key=K("att", "phys_emocoes_lida"))
+            with d2:
+                conflito = st.selectbox("Atualmente possui conflito familiar?", CONFLITO_OPTS, key=K("att", "phys_conflito_nivel"))
+
+            conflito_desc = st.text_area("Se sim, descreva (opcional)", height=68, key=K("att", "phys_conflito_desc"))
+            emocoes_obs = st.text_input("Observações sobre emoções (opcional)", key=K("att", "phys_emocoes_obs"))
+
+            st.markdown("**Saúde e antecedentes**")
+            e1, e2 = st.columns(2)
+            with e1:
+                alergias = st.selectbox("Tem alguma alergia?", SIMNAO_OPTS, key=K("att", "phys_alergias"))
+                alergias_quais = st.text_input("Se sim, qual(is)?", key=K("att", "phys_alergias_quais"))
+            with e2:
+                cirurgias = st.selectbox("Já fez alguma cirurgia?", SIMNAO_OPTS, key=K("att", "phys_cirurgias"))
+                cirurgias_quais = st.text_input("Se sim, qual(is)?", key=K("att", "phys_cirurgias_quais"))
+
+            hist_familia = st.text_area(
+                "Histórico familiar relevante (físico ou mental/psicológico) — se houver",
+                height=80,
+                key=K("att", "phys_hist_familia"),
+            )
+
+            f1, f2 = st.columns(2)
+            with f1:
+                transt_alim = st.selectbox("Possui transtorno alimentar?", TRANST_ALIM_OPTS, key=K("att", "phys_transt_alim"))
+            with f2:
+                transt_desc = st.text_input("Se sim/suspeita, qual/observações?", key=K("att", "phys_transt_alim_desc"))
 
         phys_meta = {
-            "phys_dor_local": (dor_local or "").strip(),
-            "phys_dor_regioes": regioes or [],
-            "phys_hist": (hist or "").strip(),
-            "phys_meds_txt": (meds_txt or "").strip(),
+            "phys_dor_local": (dor_local or ""),
+            "phys_dor_score": int(dor_score or 0),
+            "phys_dor_regioes": (dor_regioes or []),
+            "phys_hist": (hist_txt or ""),
+            "phys_meds_txt": (meds_txt or ""),
+            "phys_emocoes_lida": (emocoes or "Prefiro não responder"),
+            "phys_emocoes_obs": (emocoes_obs or ""),
+            "phys_alergias": (alergias or "Não"),
+            "phys_alergias_quais": (alergias_quais or ""),
+            "phys_cirurgias": (cirurgias or "Não"),
+            "phys_cirurgias_quais": (cirurgias_quais or ""),
+            "phys_hist_familia": (hist_familia or ""),
+            "phys_conflito_nivel": (conflito or "Não"),
+            "phys_conflito_desc": (conflito_desc or ""),
+            "phys_transt_alim": (transt_alim or "Não"),
+            "phys_transt_alim_desc": (transt_desc or ""),
         }
+
         notes = st.text_area("Notas do terapeuta (opcional)", height=100, key=K("att", "notes"))
 
         # Respostas para salvar no banco (inclui detalhes físicos em JSON)
         answers_store = dict(answers)
         answers_store.update(phys_meta or {})
 
-        scores = compute_scores(answers)
+        scores_raw = compute_scores(answers)
+        scores, ctx_phys = adjust_scores_with_phys(scores_raw, phys_meta)
         focus = pick_focus(scores, top_n=3)
         qty, cadence = sessions_from_scores(scores)
 
@@ -1837,6 +2060,12 @@ with tabs[0]:
         def _add_alert(msg: str):
             if msg and msg not in plan["alertas"]:
                 plan["alertas"].append(msg)
+
+
+        # Contexto vindo da anamnese física (sem mudar muito o layout):
+        if isinstance(ctx_phys, dict):
+            for a in (ctx_phys.get("alertas") or []):
+                _add_alert(a)
 
         if flags.get("flag_back"):
             _add_alert("Dificuldade para deitar de costas: ajuste posição/apoios na cama de cristal.")
@@ -2198,6 +2427,7 @@ with tabs[0]:
                             "date": str(atend_date),
                             "complaint": complaint,
             "phys_meta": phys_meta,
+                            "ctx_phys": ctx_phys,
                             "scores": scores,
                             "answers": answers_store,
                             "focus": focus,
