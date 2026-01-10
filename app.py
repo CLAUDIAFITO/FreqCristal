@@ -106,6 +106,16 @@ else:
 # Domain model (anamnese simples)
 # -----------------------------
 DOMAINS = ["sono", "ansiedade", "humor_baixo", "exaustao", "pertencimento", "tensao", "ruminacao"]
+# -----------------------------
+# Escala 0–4 (para todos os sliders da anamnese)
+# 0 = sem sintoma / ok (bom)  |  4 = muito intenso / sempre (ruim)
+# -----------------------------
+SCALE_0_4_HELP = (
+    "📏 **Escala 0–4** usada nas perguntas: "
+    "**0 = nada/sem sintoma (bom)** · 1 = leve · 2 = moderado · 3 = forte · **4 = muito forte/sempre (ruim)**. "
+    "Ex.: *Dificuldade para pegar no sono* → 0 = dorme bem, 4 = quase sempre tem dificuldade."
+)
+
 
 QUESTIONS = [
     {"id": "sono_q1", "label": "Dificuldade para pegar no sono", "domain": "sono", "weight": 1.0},
