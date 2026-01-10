@@ -1904,7 +1904,7 @@ KEY_DUR_S   = K("binaural", "dur_s")
 KEY_BG_GAIN = K("binaural", "bg_gain")
 KEY_TONE_GAIN = K("binaural", "tone_gain")
 
-st.title("SISTEMA INTEGRADO DE FREQUENCIAS ENERGÉTICAS")
+st.title("🌿✨ SISTEMA INTEGRADO DE GERAÇÃO DE TERAPIAS INTEGRATIVAS - DOCE CONEXÃO ✨🌿")
 st.caption("Geração de Planos Terapêuticos integrados utilizando terapias: Fitoterapia, Frequnciais Solfeggios e Binaurais, Cromoterapia e Cristaloterapia.")
 
 tabs = st.tabs(["Atendimento", "Binaural"])
@@ -2106,7 +2106,7 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
 # TAB: ATENDIMENTO
 # -------------------------
 with tabs[0]:
-    st.subheader("Atendimento (gera plano + sessions_nova)")
+    st.subheader("ESCUTA TERAPÊUTICA ")
 
     with st.sidebar:
         st.header("Paciente")
@@ -2240,7 +2240,7 @@ with tabs[0]:
 
         # Planos
         st.divider()
-        st.markdown("**Planos gerados (sessions_nova)**")
+        st.markdown("**PLANOS GERADOS**")
         try:
             plans_hist = list_plans(patient_id, limit=10)
         except Exception as e:
@@ -2691,7 +2691,7 @@ with tabs[0]:
                 hide_index=True,
             )
 
-            st.markdown("### Áudio (binaural) — JSON")
+            st.markdown("### Áudio (binaural) ")
             st.dataframe(json_to_df(audio_block.get("binaural"), "valor"), use_container_width=True, hide_index=True)
 
         with fcol2:
@@ -2813,7 +2813,7 @@ with tabs[0]:
 
         b1, b2 = st.columns(2)
         with b1:
-            if st.button("Salvar anamnese (intake)", use_container_width=True, key=K("att", "save_intake")):
+            if st.button("Salvar anamnese", use_container_width=True, key=K("att", "save_intake")):
                 try:
                     intake_id = insert_intake(patient_id, complaint, answers_store, scores, flags, notes)
                     st.session_state["last_intake_id"] = intake_id
@@ -2822,7 +2822,7 @@ with tabs[0]:
                     st.error(f"Erro ao salvar anamnese: {e}")
 
         with b2:
-            if st.button("Gerar plano + criar sessões (sessions_nova)", type="primary", use_container_width=True, key=K("att", "gen_plan")):
+            if st.button("Gerar plano terapêutico + criar sessões ", type="primary", use_container_width=True, key=K("att", "gen_plan")):
                 try:
                     intake_id = st.session_state.get("last_intake_id")
                     if not intake_id:
