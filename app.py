@@ -1274,38 +1274,184 @@ def _join_list(x, sep=", "):
     return str(x)
 
 
+def _fmt_hz_range(x) -> str:
+    """Formata range de Hz vindo do JSON (ex.: [8,12] -> '8–12 Hz')."""
+    if x is None:
+        return ""
+    if isinstance(x, (list, tuple)) and len(x) >= 2:
+        a, b = x[0], x[1]
+        try:
+            a = float(a); b = float(b)
+            if abs(a - b) < 1e-9:
+                return f"{a:.1f} Hz".replace('.0', '')
+            return f"{a:.1f}–{b:.1f} Hz".replace('.0', '')
+        except Exception:
+            return f"{a}–{b} Hz"
+    try:
+        v = float(x)
+        return f"{v:.1f} Hz".replace('.0', '')
+    except Exception:
+        return str(x)
+
+
+def _fmt_minutes_from_any(d: dict) -> str:
+    """Extrai duração em minutos de campos comuns (dur_min, duracao_min, duracao_s...)."""
+    for k in ["dur_min", "duracao_min", "min"]:
+        if k in d and d.get(k) is not None:
+            try:
+                return f"{float(d.get(k)):.0f} min"
+            except Exception:
+                return str(d.get(k))
+    for k in ["duracao_s", "dur_s", "seconds"]:
+        if k in d and d.get(k) is not None:
+            try:
+                sec = int(float(d.get(k)))
+                if sec < 60:
+                    return f"{sec}s"
+                m = sec // 60
+                r = sec % 60
+                return f"{m} min" + (f" {r}s" if r else "")
+            except Exception:
+                return str(d.get(k))
+    return ""
+
+
+def _format_binaural_protocolos(rows: Any) -> str:
+    """Transforma a sugestão binaural dos protocolos (lista de dict) em texto legível."""
+    if not rows:
+        return ""
+    if isinstance(rows, dict):
+        rows = [rows]
+    if isinstance(rows, str):
+        # já veio formatado
+        return rows.strip()
+
+    out_lines: List[str] = []
+    if isinstance(rows, list):
+        for r in rows:
+            if not isinstance(r, dict):
+                s = str(r).strip()
+                if s:
+                    out_lines.append(f"• {s}")
+                continue
+
+            prot = str(r.get("protocolo") or r.get("card") or "").strip()
+            mode = str(r.get("mode") or r.get("faixa") or "").strip()
+            beat = _fmt_hz_range(r.get("beat_hz") or r.get("beat") or "")
+            dur = _fmt_minutes_from_any(r)
+            obs = str(r.get("obs") or r.get("nota") or r.get("notes") or "").strip()
+
+            parts = []
+            if prot:
+                parts.append(prot)
+            if mode:
+                parts.append(mode)
+            if beat:
+                parts.append(f"Beat {beat}")
+            if dur:
+                parts.append(dur)
+
+            line = " — ".join([p for p in parts if p])
+            if obs:
+                line = (line + f". Obs: {obs}") if line else obs
+
+            if line.strip():
+                out_lines.append(f"• {line}")
+
+    # Limita para não poluir o receituário
+    return "\n".join(out_lines[:8]).strip()
+
+
 def _summarize_cama_rows(cama_rows: Any) -> str:
+    """Formata sugestão de Cama de Cristal (JSON) em texto amigável."""
     if not cama_rows:
         return ""
     if isinstance(cama_rows, str):
-        return cama_rows
-    if isinstance(cama_rows, dict):
-        return _join_list([cama_rows])
-    if isinstance(cama_rows, list):
-        out = []
-        for r in cama_rows[:12]:
-            if isinstance(r, dict):
-                # tenta campos típicos
-                prot = r.get("protocolo") or ""
-                chakra = r.get("chakra") or r.get("Chakra") or ""
-                cor = r.get("cor") or r.get("Cor") or ""
-                tempo = r.get("tempo") or r.get("Tempo") or r.get("duracao_min") or r.get("min") or ""
-                item = r.get("item") or r.get("cama") or ""
-                s = ""
-                if prot:
-                    s += f"{prot}: "
-                if chakra or cor or tempo:
-                    s += " / ".join([str(x) for x in [chakra, cor, tempo] if str(x).strip()])
-                elif item:
-                    s += str(item)
-                else:
-                    s += json.dumps(r, ensure_ascii=False)
-                out.append(s)
-            else:
-                out.append(str(r))
-        return "; ".join([x for x in out if x.strip()])
-    return str(cama_rows)
+        return cama_rows.strip()
 
+    # Normaliza em lista
+    rows = cama_rows
+    if isinstance(rows, dict):
+        rows = [rows]
+
+    # Agrupa por protocolo quando possível
+    grouped: Dict[str, List[dict]] = {}
+    loose: List[dict] = []
+
+    if isinstance(rows, list):
+        for it in rows:
+            if isinstance(it, dict):
+                prot = str(it.get("protocolo") or it.get("card") or "").strip()
+                if prot:
+                    grouped.setdefault(prot, []).append(it)
+                else:
+                    loose.append(it)
+
+    def _fmt_step(step: dict, idx: int) -> str:
+        chakra = step.get("chakra") or step.get("Chakra") or ""
+        cor = step.get("cor") or step.get("Cor") or ""
+        mins = step.get("min") or step.get("mins") or step.get("duracao_min") or step.get("tempo") or step.get("Tempo") or ""
+        bits = [str(chakra).strip(), str(cor).strip()]
+        bits = [b for b in bits if b]
+        base = " — ".join(bits) if bits else ""
+        if mins != "":
+            try:
+                base = (base + f" — {float(mins):.0f} min") if base else f"{float(mins):.0f} min"
+            except Exception:
+                base = (base + f" — {mins}") if base else str(mins)
+        if not base:
+            base = json.dumps(step, ensure_ascii=False)
+        return f"{idx}. {base}"
+
+    lines: List[str] = []
+
+    # Protocolos (ordenados)
+    for prot in sorted(grouped.keys()):
+        items = grouped[prot]
+        # Caso 1: dict com "sequencia" (lista de passos)
+        seq = None
+        for r in items:
+            if isinstance(r.get("sequencia"), list):
+                seq = r.get("sequencia")
+                obs = str(r.get("obs") or r.get("nota") or "").strip()
+                lines.append(f"{prot}:")
+                for i, step in enumerate(seq, start=1):
+                    if isinstance(step, dict):
+                        lines.append("  " + _fmt_step(step, i))
+                    else:
+                        lines.append(f"  {i}. {step}")
+                if obs:
+                    lines.append(f"  Obs: {obs}")
+                lines.append("")  # linha em branco
+                break
+
+        if seq is not None:
+            continue
+
+        # Caso 2: itens já vêm como passos (um por linha)
+        step_like = [r for r in items if isinstance(r, dict) and (r.get("chakra") or r.get("cor") or r.get("min") or r.get("duracao_min"))]
+        if step_like:
+            lines.append(f"{prot}:")
+            for i, step in enumerate(step_like, start=1):
+                lines.append("  " + _fmt_step(step, i))
+            lines.append("")
+            continue
+
+        # Caso 3: fallback (qualquer dict)
+        lines.append(f"{prot}: {json.dumps(items[0], ensure_ascii=False)}")
+        lines.append("")
+    # Loose items
+    for r in loose[:6]:
+        try:
+            lines.append(json.dumps(r, ensure_ascii=False))
+        except Exception:
+            lines.append(str(r))
+
+    # limpa linhas finais vazias
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    return "\n".join(lines).strip()
 
 def _build_receituario_data_from_plan(patient: Dict[str, Any], plan_row: Dict[str, Any], sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
     plan_json = plan_row.get("plan_json") or {}
@@ -1345,7 +1491,7 @@ def _build_receituario_data_from_plan(patient: Dict[str, Any], plan_row: Dict[st
     binaural_protocolos_txt = ""
     if sessions:
         sj = sessions[0].get("script_json") or {}
-        binaural_protocolos_txt = _join_list(sj.get("binaural_protocolos_sugestao"), sep="; ")
+        binaural_protocolos_txt = _format_binaural_protocolos(sj.get("binaural_protocolos_sugestao"))
 
     # Fito / cristais / alertas
     fito = merged_plan.get("fito_sugerida") if isinstance(merged_plan, dict) else None
@@ -1401,7 +1547,7 @@ def _build_receituario_data_from_plan(patient: Dict[str, Any], plan_row: Dict[st
     if carrier is not None and beat is not None:
         binaural_txt = f"Carrier {float(carrier):.0f} Hz | Beat {float(beat):.1f} Hz | Duração {_fmt_time_min_from_seconds(dur)}"
         if binaural_protocolos_txt:
-            binaural_txt += f"\nSugestões por protocolo: {binaural_protocolos_txt}"
+            binaural_txt += "\n\nSugestões por protocolo:\n" + binaural_protocolos_txt
 
     freq_aux_txt = ", ".join(freq_codes) if freq_codes else ""
 
@@ -1643,7 +1789,7 @@ def generate_receituario_pdf_bytes(data: Dict[str, Any]) -> bytes:
 
     if data.get("cama_txt"):
         story.append(Paragraph("<b>Cama de cristal (sugestão):</b>", styles["Normal"]))
-        story.append(Paragraph(data.get("cama_txt",""), styles["Normal"]))
+        story.append(Paragraph(data.get("cama_txt", "").replace("\n","<br/>"), styles["Normal"]))
         story.append(Spacer(1, 6))
 
     if data.get("cristais_txt"):
