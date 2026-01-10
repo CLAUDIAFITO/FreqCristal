@@ -122,6 +122,13 @@ QUESTIONS = [
     {"id": "ten_q2", "label": "Mandíbula/ombros travados / corpo em alerta", "domain": "tensao", "weight": 1.0},
     {"id": "rum_q1", "label": "Mente acelerada / ruminação", "domain": "ruminacao", "weight": 1.2},
     {"id": "rum_q2", "label": "Dificuldade de foco por pensamentos repetitivos", "domain": "ruminacao", "weight": 1.0},
+
+    {"id": "ans_q3", "label": "Ansiedade no momento (sensação presente)", "domain": "ansiedade", "weight": 0.8},
+    {"id": "hum_q3", "label": "Histórico ou sinais atuais de depressão", "domain": "humor_baixo", "weight": 1.3},
+    {"id": "exa_q3", "label": "Baixa energia hoje / esgotamento físico", "domain": "exaustao", "weight": 1.1},
+    {"id": "ten_q3", "label": "Dor/incômodo físico atualmente", "domain": "tensao", "weight": 1.2},
+    {"id": "ten_q4", "label": "Dor recorrente ou crônica (últimos meses)", "domain": "tensao", "weight": 1.0},
+    {"id": "ten_q5", "label": "A dor limita atividades ou movimentos", "domain": "tensao", "weight": 1.0},
 ]
 
 FLAGS = [
@@ -130,6 +137,11 @@ FLAGS = [
     {"id": "flag_allergy", "label": "Alergias / sensibilidades"},
     {"id": "flag_sound", "label": "Sensibilidade a som (binaural)"},
     {"id": "flag_light", "label": "Sensibilidade à luz (cama de cristal)"},
+
+    {"id": "flag_back", "label": "Dificuldade para deitar de costas (cama de cristal)"},
+    {"id": "flag_heat", "label": "Sente muito calor / sensibilidade ao calor"},
+    {"id": "flag_perfume", "label": "Sensibilidade a cheiros/perfumes (aromaterapia)"},
+    {"id": "flag_feet", "label": "Sensibilidade nos pés (pressão/reflexo)"},
 ]
 
 DOMAIN_TO_PROTOCOL = {
@@ -687,6 +699,13 @@ def apply_intake_to_form(intake_row: Dict[str, Any]):
     st.session_state[K("att", "notes")] = (intake_row.get("notes") or "") if intake_row else ""
     if intake_row and intake_row.get("id"):
         st.session_state["last_intake_id"] = intake_row["id"]
+    # --- Anamnese física (detalhes) ---
+    st.session_state[K("att", "phys_dor_local")] = str(ans.get("phys_dor_local") or "")
+    reg = ans.get("phys_dor_regioes")
+    st.session_state[K("att", "phys_dor_regioes")] = reg if isinstance(reg, list) else ([] if not reg else [str(reg)])
+    st.session_state[K("att", "phys_hist")] = str(ans.get("phys_hist") or "")
+    st.session_state[K("att", "phys_meds_txt")] = str(ans.get("phys_meds_txt") or "")
+
 
     for q in QUESTIONS:
         k = K("att", q["id"])
@@ -705,6 +724,12 @@ def reset_att_form_state():
     st.session_state.pop("last_intake_id", None)
     st.session_state[K("att", "complaint")] = ""
     st.session_state[K("att", "notes")] = ""
+    # Anamnese física (detalhes)
+    st.session_state[K("att", "phys_dor_local")] = ""
+    st.session_state[K("att", "phys_dor_regioes")] = []
+    st.session_state[K("att", "phys_hist")] = ""
+    st.session_state[K("att", "phys_meds_txt")] = ""
+
     for q in QUESTIONS:
         st.session_state[K("att", q["id"])] = 0
     for f in FLAGS:
@@ -1263,6 +1288,23 @@ def K(*parts: str) -> str:
     return "__".join(parts)
 
 
+# --- Anamnese física (detalhes) ---
+PHYS_DOR_REGIOES = [
+    "Cabeça / enxaqueca",
+    "Pescoço",
+    "Ombros",
+    "Coluna cervical",
+    "Coluna torácica",
+    "Coluna lombar",
+    "Quadril",
+    "Joelhos",
+    "Pés / tornozelos",
+    "Abdômen",
+    "Outros",
+]
+
+
+
 def _json_str(x: Any) -> str:
     """String segura para mostrar em grid (mantém dict/list como JSON)."""
     if x is None:
@@ -1321,8 +1363,8 @@ KEY_DUR_S   = K("binaural", "dur_s")
 KEY_BG_GAIN = K("binaural", "bg_gain")
 KEY_TONE_GAIN = K("binaural", "tone_gain")
 
-st.title("🛏️🌈 SISTEMA INTEGRADO DE TERAPIAS -  DOCE CONEXÃO) 🛏️🌈 ")
-st.caption("Terapias Integrativas Cama de cristal, Cromoteraia, Fitoterapia, Frequencias binaurais, Solfeggios e Chakras.")
+st.title("claudiafito_v2 — Atendimento + Binaural (como no app antigo)")
+st.caption("Inclui presets Gamma/Theta/Alpha/Delta, Solfeggio, Chakras, Tocar/Parar e upload de música de fundo do computador.")
 
 tabs = st.tabs(["Atendimento", "Binaural"])
 
@@ -1523,7 +1565,7 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
 # TAB: ATENDIMENTO
 # -------------------------
 with tabs[0]:
-    st.subheader("Atendimento (PLANO + SESSÕES)")
+    st.subheader("Atendimento (gera plano + sessions_nova)")
 
     with st.sidebar:
         st.header("Paciente")
@@ -1657,7 +1699,7 @@ with tabs[0]:
 
         # Planos
         st.divider()
-        st.markdown("**Planos gerados**")
+        st.markdown("**Planos gerados (sessions_nova)**")
         try:
             plans_hist = list_plans(patient_id, limit=10)
         except Exception as e:
@@ -1752,7 +1794,25 @@ with tabs[0]:
 
                     flags[f["id"]] = st.checkbox(f["label"], value=False, key=kf)
 
+        
+        with st.expander("🩺 Anamnese física (detalhes)", expanded=False):
+            p1, p2 = st.columns(2)
+            dor_local = p1.text_input("Local principal da dor/incômodo (se houver)", key=K("att", "phys_dor_local"))
+            regioes = p2.multiselect("Regiões afetadas", options=PHYS_DOR_REGIOES, key=K("att", "phys_dor_regioes"))
+            hist = st.text_area("Histórico de saúde / cirurgias relevantes", height=80, key=K("att", "phys_hist"))
+            meds_txt = st.text_area("Medicamentos em uso (detalhe)", height=80, key=K("att", "phys_meds_txt"))
+
+        phys_meta = {
+            "phys_dor_local": (dor_local or "").strip(),
+            "phys_dor_regioes": regioes or [],
+            "phys_hist": (hist or "").strip(),
+            "phys_meds_txt": (meds_txt or "").strip(),
+        }
         notes = st.text_area("Notas do terapeuta (opcional)", height=100, key=K("att", "notes"))
+
+        # Respostas para salvar no banco (inclui detalhes físicos em JSON)
+        answers_store = dict(answers)
+        answers_store.update(phys_meta or {})
 
         scores = compute_scores(answers)
         focus = pick_focus(scores, top_n=3)
@@ -1766,6 +1826,22 @@ with tabs[0]:
 
         selected_names = select_protocols(scores, protocols)
         plan = merge_plan(selected_names, protocols)
+
+        # Alertas adicionais vindos da anamnese física / sensibilidades
+        plan.setdefault("alertas", [])
+        def _add_alert(msg: str):
+            if msg and msg not in plan["alertas"]:
+                plan["alertas"].append(msg)
+
+        if flags.get("flag_back"):
+            _add_alert("Dificuldade para deitar de costas: ajuste posição/apoios na cama de cristal.")
+        if flags.get("flag_perfume"):
+            _add_alert("Sensibilidade a cheiros/perfumes: evite aromas fortes; use aromaterapia bem suave ou omita.")
+        if flags.get("flag_heat"):
+            _add_alert("Sensibilidade ao calor: mantenha ambiente fresco e confortável.")
+        if flags.get("flag_feet"):
+            _add_alert("Sensibilidade nos pés: evite pressão intensa; inicie com toques leves.")
+
 
         audio_block = {
             "binaural": {
@@ -1902,7 +1978,7 @@ with tabs[0]:
             st.dataframe(df_sessoes, use_container_width=True, hide_index=True)
 
         with r2c2:
-            st.markdown("### Frequências extras")
+            st.markdown("### Frequências extras (codes)")
             if extra_freq_codes:
                 st.dataframe(pd.DataFrame([{"code": c} for c in extra_freq_codes]), use_container_width=True, hide_index=True)
             else:
@@ -1968,7 +2044,7 @@ with tabs[0]:
                 hide_index=True,
             )
 
-            st.markdown("### Áudio (binaural)")
+            st.markdown("### Áudio (binaural) — JSON")
             st.dataframe(json_to_df(audio_block.get("binaural"), "valor"), use_container_width=True, hide_index=True)
 
         with fcol2:
@@ -2092,7 +2168,7 @@ with tabs[0]:
         with b1:
             if st.button("Salvar anamnese (intake)", use_container_width=True, key=K("att", "save_intake")):
                 try:
-                    intake_id = insert_intake(patient_id, complaint, answers, scores, flags, notes)
+                    intake_id = insert_intake(patient_id, complaint, answers_store, scores, flags, notes)
                     st.session_state["last_intake_id"] = intake_id
                     st.success("Anamnese salva!")
                 except Exception as e:
@@ -2103,7 +2179,7 @@ with tabs[0]:
                 try:
                     intake_id = st.session_state.get("last_intake_id")
                     if not intake_id:
-                        intake_id = insert_intake(patient_id, complaint, answers, scores, flags, notes)
+                        intake_id = insert_intake(patient_id, complaint, answers_store, scores, flags, notes)
                         st.session_state["last_intake_id"] = intake_id
 
                     plan_id = insert_plan(
@@ -2116,7 +2192,9 @@ with tabs[0]:
                         plan_json={
                             "date": str(atend_date),
                             "complaint": complaint,
+            "phys_meta": phys_meta,
                             "scores": scores,
+                            "answers": answers_store,
                             "focus": focus,
                             "selected_protocols": selected_names,
                             "plan": plan,
