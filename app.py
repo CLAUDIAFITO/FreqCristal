@@ -1191,23 +1191,29 @@ _DOMAIN_RATIONALE: Dict[str, Dict[str, str]] = {
 
 def build_domains_summary_df() -> pd.DataFrame:
     """Tabela-guia: domínio → motivo → sinais → direção terapêutica."""
-    rows = []
-    # mantém ordem das perguntas (para ficar intuitivo)
-    for d in QUESTIONS.keys():
-        r = _DOMAIN_RATIONALE.get(d, {})
-        rows.append({
-            "Domínio": _DOMAIN_LABEL.get(d, d),
-            "Motivo": r.get("motivo", ""),
-            "Sinais comuns quando alto": r.get("sinais", ""),
-            "Direção terapêutica (geral)": r.get("direcao", ""),
-        })
-    return pd.DataFrame(rows, columns=["Domínio", "Motivo", "Sinais comuns quando alto", "Direção terapêutica (geral)"])
+    rows: List[Dict[str, Any]] = []
 
+    # Ordem: DOMAINS (principal) + quaisquer domínios extras que existirem no dicionário de resumo
+    ordered = list(DOMAINS)
+    for k in (_DOMAIN_RATIONALE or {}).keys():
+        if k not in ordered:
+            ordered.append(k)
 
+    for d in ordered:
+        r = (_DOMAIN_RATIONALE or {}).get(d, {}) or {}
+        rows.append(
+            {
+                "Domínio": _DOMAIN_LABEL.get(d, d),
+                "Motivo": r.get("motivo", ""),
+                "Sinais comuns quando alto": r.get("sinais", ""),
+                "Direção terapêutica (geral)": r.get("direcao", ""),
+            }
+        )
 
-
-# ---- Escala padrão para perguntas 0–4 (anamnese) ----
-SCALE_0_4_HELP = "Escala (0–4): 0 = nada/sem queixa (melhor) • 1 = leve • 2 = moderado • 3 = forte • 4 = muito intenso (pior)."
+    return pd.DataFrame(
+        rows,
+        columns=["Domínio", "Motivo", "Sinais comuns quando alto", "Direção terapêutica (geral)"],
+    )
 
 def _join_list(x, sep=", "):
     if not x:
