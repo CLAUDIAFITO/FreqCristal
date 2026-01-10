@@ -1928,7 +1928,7 @@ st.session_state.setdefault("binaural_tone_gain", float(st.session_state[KEY_TON
 # TAB: BINAURAL
 # -------------------------
 with tabs[1]:
-    st.subheader("Binaural — igual ao app antigo (Tocar/Parar + fundo)")
+    st.subheader("Binaural")
 
     band_map = {
         "Delta (1–4 Hz)": 3.0,
@@ -1956,7 +1956,7 @@ with tabs[1]:
     mapa_pres = {p["nome"]: p for p in (presets or []) if p.get("nome")}
     cols_top = st.columns([2, 1])
     preset_names = list(mapa_pres.keys()) or ["(nenhum)"]
-    preset_escolhido = cols_top[0].selectbox("Tratamento pré-definido (binaural_presets)", preset_names, key=K("binaural", "preset"))
+    preset_escolhido = cols_top[0].selectbox("Tratamento pré-definido", preset_names, key=K("binaural", "preset"))
 
     if cols_top[1].button("Aplicar preset", key=K("binaural", "apply_preset")) and preset_escolhido in mapa_pres:
         p = mapa_pres[preset_escolhido]
