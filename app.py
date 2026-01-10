@@ -1147,6 +1147,26 @@ _DOMAIN_RATIONALE: Dict[str, Dict[str, str]] = {
         "sinais": "Aperto no peito, inquietação, pensamentos acelerados, tensão muscular.",
         "direcao": "Aterramento, respiração, α/θ, rituais de pausa, apoio emocional.",
     },
+    "humor_baixo": {
+        "motivo": "Humor baixo indica redução de vitalidade emocional (anhedonia/desânimo) e muda a prioridade do cuidado.",
+        "sinais": "Tristeza frequente, perda de prazer, baixa motivação, isolamento, choro fácil.",
+        "direcao": "Acolhimento, ativação suave (rotina + pequenos passos), luz/cores quentes moderadas, suporte psicológico se necessário.",
+    },
+    "exaustao": {
+        "motivo": "Exaustão aponta sobrecarga (burnout) e pouca recuperação, afetando sono, foco e imunidade.",
+        "sinais": "Cansaço constante, sem energia, irritabilidade, procrastinação, sensação de 'no limite'.",
+        "direcao": "Recuperação (sono), reduzir exigências, sessões mais curtas, aterramento, práticas restaurativas e limites.",
+    },
+    "tensao": {
+        "motivo": "Tensão corporal costuma refletir alerta crônico (simpático) e somatização de estresse/ansiedade.",
+        "sinais": "Ombros/mandíbula travados, dores musculares, respiração curta, corpo em prontidão.",
+        "direcao": "Relaxamento progressivo, respiração, alongamento leve, calor/local, cromoterapia suave e descarrego.",
+    },
+    "ruminacao": {
+        "motivo": "Ruminação mantém o cérebro em looping de ameaça, piora ansiedade e atrapalha presença e sono.",
+        "sinais": "Pensamentos repetitivos, dificuldade de foco, mente acelerada, preocupação constante.",
+        "direcao": "Treino de atenção (mindfulness), escrita terapêutica, α/θ, reduzir estímulos e organizar rotina.",
+    },
     "depressao": {
         "motivo": "Humor rebaixado reduz energia/engajamento e pode exigir cuidado/encaminhamento.",
         "sinais": "Desânimo, apatia, perda de prazer, desesperança, isolamento.",
