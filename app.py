@@ -850,6 +850,10 @@ _DOMAIN_OBJ = {
 }
 
 
+
+# ---- Escala padrão para perguntas 0–4 (anamnese) ----
+SCALE_0_4_HELP = "Escala (0–4): 0 = nada/sem queixa (melhor) • 1 = leve • 2 = moderado • 3 = forte • 4 = muito intenso (pior)."
+
 def _join_list(x, sep=", "):
     if not x:
         return ""
@@ -1736,6 +1740,7 @@ with tabs[0]:
             atend_date = st.date_input("Data", value=date.today(), key=K("att", "date"))
 
         st.markdown("**Anamnese (0–4)**")
+        st.caption(SCALE_0_4_HELP)
 
         # Perguntas separadas por abas (por domínio) para facilitar visualização/foco
         q_by_domain = {d: [q for q in QUESTIONS if q.get("domain") == d] for d in DOMAINS}
@@ -1764,11 +1769,11 @@ with tabs[0]:
 
                         if kq in st.session_state:
 
-                            answers[q["id"]] = st.slider(q["label"], 0, 4, key=kq)
+                            answers[q["id"]] = st.slider(q["label"], 0, 4, key=kq, help=SCALE_0_4_HELP)
 
                         else:
 
-                            answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=kq)
+                            answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=kq, help=SCALE_0_4_HELP)
 
         # Garantia (caso a lista de perguntas mude no futuro)
         for q in QUESTIONS:
