@@ -292,6 +292,131 @@ def sessions_from_scores(scores: Dict[str, float]) -> Tuple[int, int]:
     return qty, cadence
 
 
+
+
+def build_alert_actions(
+    alertas: List[str],
+    flags: Dict[str, Any],
+    phys_meta: Dict[str, Any],
+    ctx_phys: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    """Transforma alertas em condutas práticas (para entrar no plano)."""
+    out: List[Dict[str, str]] = []
+
+    def add(categoria: str, detalhe: str, acao: str, prioridade: str = "Média"):
+        out.append({
+            "Prioridade": prioridade,
+            "Categoria": categoria,
+            "Detalhe": (detalhe or "").strip(),
+            "Conduta sugerida": acao.strip(),
+        })
+
+    # Depressão (0-4) — do físico
+    dep_lvl = int(phys_meta.get("phys_depressao_nivel") or 0)
+    if dep_lvl >= 3:
+        add(
+            "Humor / Depressão",
+            f"Nível {dep_lvl}/4",
+            "Priorizar acolhimento e regulação suave (α/θ). Investigar sinais de risco e sugerir acompanhamento com psicólogo/psiquiatra quando necessário. Evitar estímulos intensos nas primeiras sessões.",
+            "Alta",
+        )
+    elif dep_lvl == 2:
+        add(
+            "Humor / Depressão",
+            "Nível 2/4 (moderada)",
+            "Aumentar foco em regulação do SNC, rotina mínima e suporte emocional. Sugerir acompanhamento profissional se houver piora ou ideação.",
+            "Média-Alta",
+        )
+
+    # Conflito familiar
+    confl = str(phys_meta.get("phys_conflito_nivel") or "").strip()
+    if confl in ("Moderado", "Grave"):
+        add(
+            "Conflito familiar",
+            confl,
+            "Incluir práticas de segurança interna (grounding/acolhimento), pertencimento e limites. Sugerir rede de apoio/terapia. Se houver violência/ameaça, orientar buscar ajuda imediata (serviços locais).",
+            "Alta" if confl == "Grave" else "Média",
+        )
+
+    # Transtorno alimentar
+    ta = str(phys_meta.get("phys_transt_alim") or "").strip()
+    if ta in ("Sim", "Suspeita/Em investigação"):
+        add(
+            "Transtorno alimentar",
+            ta,
+            "Evitar intervenções centradas em peso/culpa. Priorizar regulação emocional e autoimagem. Sugerir acompanhamento conjunto com nutricionista e psicólogo/psiquiatra.",
+            "Alta" if ta == "Sim" else "Média",
+        )
+
+    # Alergias / sensibilidades
+    if str(phys_meta.get("phys_alergias") or "") == "Sim" or bool(flags.get("flag_allergy")):
+        quais = (phys_meta.get("phys_alergias_quais") or "").strip()
+        add(
+            "Alergias / sensibilidades",
+            quais or "Relatada na anamnese",
+            "Registrar no prontuário. Evitar fitoterápicos/aromas potencialmente irritantes e iniciar com mínima exposição (teste/monitoramento). Em reações, suspender e orientar avaliação médica.",
+            "Média",
+        )
+
+    # Cirurgias
+    if str(phys_meta.get("phys_cirurgias") or "") == "Sim":
+        quais = (phys_meta.get("phys_cirurgias_quais") or "").strip()
+        add(
+            "Cirurgias / condições prévias",
+            quais or "Relatada na anamnese",
+            "Respeitar limitações de postura/tempo na cama. Se cirurgia recente, dor intensa ou sinais de alerta, orientar avaliação médica antes de intensificar protocolos.",
+            "Média",
+        )
+
+    # Dor (0-10)
+    dor = int(phys_meta.get("phys_dor_score") or 0)
+    if dor >= 8:
+        add(
+            "Dor",
+            f"{dor}/10",
+            "Dor intensa: avaliar sinais de alarme e sugerir avaliação médica/fisioterapia. Nas sessões, priorizar relaxamento/analgesia suave (α/θ) e luz baixa; progressão gradual.",
+            "Alta",
+        )
+    elif dor >= 5:
+        add(
+            "Dor",
+            f"{dor}/10",
+            "Incluir abordagem para tensão/dor (relaxamento, respiração, alongamento leve). Monitorar melhora entre sessões e ajustar intensidade.",
+            "Média",
+        )
+
+    # Medicamentos
+    meds_txt = (phys_meta.get("phys_meds_txt") or "").strip()
+    if meds_txt or bool(flags.get("flag_meds")):
+        add(
+            "Medicamentos",
+            meds_txt or "Uso relatado",
+            "Registrar medicamentos em uso. Evitar promessas terapêuticas e orientar que qualquer ajuste de medicação deve ser feito apenas com o médico.",
+            "Baixa",
+        )
+
+    # Sensibilidade a som/luz
+    if bool(flags.get("flag_sound")):
+        add(
+            "Sensibilidade a som",
+            "",
+            "Manter volume baixo, músicas neutras, evitar frequências mais estimulantes no início e checar conforto durante a sessão.",
+            "Média",
+        )
+    if bool(flags.get("flag_light")):
+        add(
+            "Sensibilidade a luz",
+            "",
+            "Usar intensidade de luz baixa/moderada, evitar flashes e cores muito saturadas no início; checar conforto ocular/dor de cabeça.",
+            "Média",
+        )
+
+    # Se existem alertas gerais do plano (flags), mas nada entrou acima, ainda assim registrar
+    if alertas and not out:
+        add("Alertas", "; ".join(alertas[:6]), "Registrar e considerar na condução das sessões (intensidade, acolhimento e encaminhamentos).", "Média")
+
+    return out
+
 def load_protocols() -> Dict[str, Dict[str, Any]]:
     if BACKEND == "postgres":
         rows = qall("select name, domain, rules_json, content_json, active from public.protocol_library where active = true")
@@ -996,6 +1121,88 @@ _DOMAIN_OBJ = {
     "tensao": "reduzir tensão muscular e estado de alerta",
     "ruminacao": "acalmar mente repetitiva e melhorar foco/presença",
 }
+
+
+# -----------------------------
+# Resumo / motivo dos domínios (para orientar o terapeuta)
+# -----------------------------
+_DOMAIN_RATIONALE: Dict[str, Dict[str, str]] = {
+    "sono": {
+        "motivo": "Sono é o principal marcador de recuperação (SNC, hormônios do estresse, imunidade).",
+        "sinais": "Insônia, despertares, sono não reparador, sonolência diurna.",
+        "direcao": "Regular rotina, relaxamento (α/θ), higiene do sono, luz suave.",
+    },
+    "ansiedade": {
+        "motivo": "Ansiedade sinaliza hiperativação (simpático/ruminação) e costuma travar autocuidado.",
+        "sinais": "Aperto no peito, inquietação, pensamentos acelerados, tensão muscular.",
+        "direcao": "Aterramento, respiração, α/θ, rituais de pausa, apoio emocional.",
+    },
+    "depressao": {
+        "motivo": "Humor rebaixado reduz energia/engajamento e pode exigir cuidado/encaminhamento.",
+        "sinais": "Desânimo, apatia, perda de prazer, desesperança, isolamento.",
+        "direcao": "Acolhimento, rotina mínima, luz/sons suaves, rede de apoio, encaminhar se necessário.",
+    },
+    "pertencimento": {
+        "motivo": "Pertencimento/segurança social impacta autoestima, limites, decisões e vínculo terapêutico.",
+        "sinais": "Solidão, vergonha, sensação de não ter lugar, autojulgamento.",
+        "direcao": "Práticas de acolhimento, reconexão, trabalho de limites e apoio comunitário.",
+    },
+    "estresse": {
+        "motivo": "Estresse alto mantém o corpo em alerta e piora sono, dor, digestão e ansiedade.",
+        "sinais": "Cansaço, irritabilidade, tensão, sensação de sobrecarga constante.",
+        "direcao": "Regulação do sistema nervoso, pausas, respiração, α/θ, redução de estímulos.",
+    },
+    "energia": {
+        "motivo": "Energia baixa aponta exaustão e limita a capacidade de sustentar mudanças.",
+        "sinais": "Fadiga, procrastinação, falta de motivação, “sem bateria”.",
+        "direcao": "Recuperação (sono), organização do dia, sessões mais curtas e progressivas.",
+    },
+    "dor": {
+        "motivo": "Dor persistente reorganiza o SNC, aumenta estresse e reduz qualidade de vida.",
+        "sinais": "Dores recorrentes, travas, tensão, piora com estresse/sono ruim.",
+        "direcao": "Relaxamento, analgesia suave, alongamento leve, encaminhar se houver sinais de alarme.",
+    },
+    "digestao": {
+        "motivo": "Eixo intestino-cérebro influencia humor, ansiedade e inflamação.",
+        "sinais": "Inchaço, refluxo, intestino preso/solto, desconforto pós-refeição.",
+        "direcao": "Rotina alimentar, chás suaves, respiração/relaxamento e observação de gatilhos.",
+    },
+    "respiracao": {
+        "motivo": "Respiração é a alavanca mais rápida para regular ansiedade e tensão.",
+        "sinais": "Falta de ar, respiração curta, aperto, crises de ansiedade.",
+        "direcao": "Treino respiratório, coerência cardíaca, θ/α e relaxamento de peitoral/diafragma.",
+    },
+    "imunidade": {
+        "motivo": "Imunidade baixa costuma vir com estresse crônico, sono ruim e inflamação.",
+        "sinais": "Doenças recorrentes, alergias, fadiga, inflamação frequente.",
+        "direcao": "Sono, hidratação, manejo de estresse e apoio suave (sem promessas médicas).",
+    },
+    "cabeca": {
+        "motivo": "Cefaleia reflete tensão, sono ruim, estresse, visão/mandíbula/cervical.",
+        "sinais": "Dor de cabeça, enxaqueca, pressão na nuca/testa.",
+        "direcao": "Relaxamento, cervical, hidratação, reduzir telas e observar gatilhos.",
+    },
+    "circulacao": {
+        "motivo": "Circulação influencia energia, dor, frio em extremidades e recuperação.",
+        "sinais": "Frio em mãos/pés, formigamento, câimbras, inchaço leve.",
+        "direcao": "Movimento leve, respiração, hidratação, atenção a sinais de alarme.",
+    },
+}
+
+def build_domains_summary_df() -> pd.DataFrame:
+    """Tabela-guia: domínio → motivo → sinais → direção terapêutica."""
+    rows = []
+    # mantém ordem das perguntas (para ficar intuitivo)
+    for d in QUESTIONS.keys():
+        r = _DOMAIN_RATIONALE.get(d, {})
+        rows.append({
+            "Domínio": _DOMAIN_LABEL.get(d, d),
+            "Motivo": r.get("motivo", ""),
+            "Sinais comuns quando alto": r.get("sinais", ""),
+            "Direção terapêutica (geral)": r.get("direcao", ""),
+        })
+    return pd.DataFrame(rows, columns=["Domínio", "Motivo", "Sinais comuns quando alto", "Direção terapêutica (geral)"])
+
 
 
 
@@ -1890,6 +2097,12 @@ with tabs[0]:
         st.markdown("**Anamnese (0–4)**")
         st.caption(SCALE_0_4_HELP)
 
+        with st.expander("🧭 Resumo dos domínios (motivo de cada um)"):
+            df_dom = build_domains_summary_df()
+            st.dataframe(df_dom, use_container_width=True, hide_index=True)
+            st.caption("Use este resumo como referência rápida: quando o score estiver alto, priorize a direção terapêutica sugerida e combine com o contexto físico/alertas.")
+
+
         # Perguntas separadas por abas (por domínio) para facilitar visualização/foco
         q_by_domain = {d: [q for q in QUESTIONS if q.get("domain") == d] for d in DOMAINS}
 
@@ -2077,6 +2290,11 @@ with tabs[0]:
             _add_alert("Sensibilidade nos pés: evite pressão intensa; inicie com toques leves.")
 
 
+
+        # Condutas para alertas (entra no plano e nas sessões)
+        condutas_alerta = build_alert_actions(plan.get("alertas", []), flags, phys_meta, ctx_phys)
+        plan["condutas_alerta"] = condutas_alerta
+
         audio_block = {
             "binaural": {
                 "carrier_hz": float(st.session_state[KEY_CARRIER]),
@@ -2091,6 +2309,12 @@ with tabs[0]:
         extra_freq_codes = st.session_state.get("extra_freq_codes") or []
 
         scripts = build_session_scripts(qty, cadence, focus, selected_names, protocols, audio_block, extra_freq_codes)
+        for s in scripts:
+            s["alertas"] = plan.get("alertas", [])
+            s["condutas_alerta"] = plan.get("condutas_alerta", [])
+            s["contexto_fisico"] = ctx_phys
+            s["phys_meta"] = phys_meta
+
 
         # -------------------------
         # Sugestões (Atendimento): Cama de Cristal + Frequências
@@ -2230,6 +2454,13 @@ with tabs[0]:
         with r3c2:
             st.markdown("### Plano consolidado (resumo)")
             st.dataframe(df_plano, use_container_width=True, hide_index=True)
+
+        st.markdown("### 🚨 Alertas e condutas")
+        if plan.get("condutas_alerta"):
+            df_ca = pd.DataFrame(plan.get("condutas_alerta"), columns=["Prioridade","Categoria","Detalhe","Conduta sugerida"])
+            st.dataframe(df_ca, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Sem alertas relevantes (além dos marcadores normais do plano).")
 
         # 4) Sugestão — Cama de Cristal (tudo em grid)
         st.divider()
@@ -2428,6 +2659,8 @@ with tabs[0]:
                             "complaint": complaint,
             "phys_meta": phys_meta,
                             "ctx_phys": ctx_phys,
+                    "condutas_alerta": condutas_alerta,
+
                             "scores": scores,
                             "answers": answers_store,
                             "focus": focus,
