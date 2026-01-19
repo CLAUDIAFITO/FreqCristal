@@ -1,5 +1,5 @@
 # claudiafito_v2 — Atendimento + Binaural (como no app antigo)
-# Single-file Streamlit app (compatível com Python 3.9+)
+# Single-file Streamlit app (compatível com Python 3.9+)kk
 
 import os
 import json
