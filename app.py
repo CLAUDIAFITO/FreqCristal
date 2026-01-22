@@ -16,15 +16,6 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-# -------------------------
-# UI helpers
-# -------------------------
-
-def K(*parts: str) -> str:
-    """Cria keys consistentes para o st.session_state."""
-    return "__".join(parts)
-
-
 # --- Optional dependency: reportlab (PDF)
 try:
     import reportlab  # type: ignore
@@ -162,152 +153,6 @@ FLAGS = [
     {"id": "flag_perfume", "label": "Sensibilidade a cheiros/perfumes (aromaterapia)"},
     {"id": "flag_feet", "label": "Sensibilidade nos pés (pressão/reflexo)"},
 ]
-
-
-# -----------------------------
-# Neuroplasticidade (obstáculos / hábitos) — escala 0–4
-# 0 = está ok (facilita mudança) · 4 = muito difícil / muito presente (atrapalha)
-# Esses itens entram como "ajustes leves" nos domínios e também modulam quantidade/cadência de sessões.
-# -----------------------------
-NEURO_QUESTIONS = [
-    {"id": "np_sleep", "label": "Sono desregulado (horário irregular / telas à noite)", "impacts": {"sono": 10, "exaustao": 6}},
-    {"id": "np_move", "label": "Pouco movimento/alongamento na semana", "impacts": {"exaustao": 8, "tensao": 6}},
-    {"id": "np_stress", "label": "Reatividade ao estresse (permanece em modo alerta por muito tempo)", "impacts": {"ansiedade": 8, "ruminacao": 6, "tensao": 4}},
-    {"id": "np_pain_fear", "label": "Medo da dor / evito atividades por receio", "impacts": {"tensao": 8, "ansiedade": 4, "ruminacao": 4}},
-    {"id": "np_selftalk", "label": "Autocrítica / conversa interna dura (sem compaixão)", "impacts": {"pertencimento": 8, "humor_baixo": 6, "ruminacao": 4}},
-    {"id": "np_social", "label": "Isolamento / pouca rede de apoio", "impacts": {"pertencimento": 8, "humor_baixo": 6, "ansiedade": 3}},
-    {"id": "np_present", "label": "Dificuldade de pausar e notar corpo/respiração (presença)", "impacts": {"ruminacao": 6, "ansiedade": 4}},
-    {"id": "np_escape", "label": "Fuga por comida/tela/estímulo (compulsão/scroll) em momentos difíceis", "impacts": {"ansiedade": 4, "exaustao": 4, "sono": 4}},
-]
-
-
-def _np_readiness_pct(neuro_meta: Dict[str, Any]) -> int:
-    vals = []
-    for q in NEURO_QUESTIONS:
-        try:
-            v = int(float((neuro_meta or {}).get(q["id"], 0)))
-        except Exception:
-            v = 0
-        v = 0 if v < 0 else (4 if v > 4 else v)
-        vals.append(v)
-    if not vals:
-        return 100
-    avg = sum(vals) / (len(vals) * 4.0)  # 0..1 (quanto maior, pior)
-    return int(round((1.0 - avg) * 100.0))
-
-
-def adjust_scores_with_neuro(scores: Dict[str, int], neuro_meta: Dict[str, Any]) -> Tuple[Dict[str, int], Dict[str, Any]]:
-    """Ajustes leves (não diagnósticos) a partir de hábitos/obstáculos de neuroplasticidade."""
-    out = {k: int(v or 0) for k, v in (scores or {}).items()}
-    ctx_ajustes: List[str] = []
-    ctx_alertas: List[str] = []
-    readiness = _np_readiness_pct(neuro_meta)
-
-    def clamp100(x: int) -> int:
-        return 0 if x < 0 else (100 if x > 100 else int(x))
-
-    def add(domain: str, delta: int, reason: str = ""):
-        if domain not in out:
-            return
-        before = out[domain]
-        out[domain] = clamp100(before + int(delta))
-        if reason and out[domain] != before:
-            ctx_ajustes.append(f"{domain}: {before}→{out[domain]} ({reason})")
-
-    nm = neuro_meta or {}
-    for q in NEURO_QUESTIONS:
-        try:
-            v = int(float(nm.get(q["id"], 0)))
-        except Exception:
-            v = 0
-        v = 0 if v < 0 else (4 if v > 4 else v)
-        frac = v / 4.0  # 0..1
-        impacts = q.get("impacts") or {}
-        for dom, max_delta in impacts.items():
-            add(dom, int(round(float(max_delta) * frac)), q["id"])
-
-    # leitura simples (para orientar o terapeuta)
-    if readiness < 45:
-        ctx_alertas.append("Baixa prontidão para mudança: priorize regulação, micro-passos e consistência.")
-    elif readiness >= 75:
-        ctx_alertas.append("Boa prontidão para mudança: pode avançar com práticas e tarefas graduais.")
-    else:
-        ctx_alertas.append("Prontidão moderada: combine regulação + prática semanal simples.")
-
-    return out, {"readiness_pct": readiness, "ajustes": ctx_ajustes, "alertas": ctx_alertas}
-
-
-def adjust_sessions_with_neuro(qty: int, cadence: int, neuro_ctx: Dict[str, Any]) -> Tuple[int, int, Dict[str, Any]]:
-    """Modula qty/cadência com base na prontidão (neuroplasticidade)."""
-    try:
-        readiness = int(neuro_ctx.get("readiness_pct", 100))
-    except Exception:
-        readiness = 100
-
-    q0, c0 = int(qty or 0), int(cadence or 0)
-    q, c = q0, c0
-    reason = ""
-
-    if readiness < 45:
-        q = min(10, q0 + 2)
-        c = max(7, c0 - 2) if c0 else 7
-        reason = "prontidão baixa → mais suporte e consistência"
-    elif readiness >= 75:
-        q = max(3, q0 - 1) if q0 else 3
-        c = min(14, c0 + 2) if c0 else 10
-        reason = "prontidão alta → menos sessões, integração maior"
-    else:
-        reason = "prontidão moderada → manter sugestão base"
-
-    return q, c, {"readiness_pct": readiness, "ajuste": reason, "qty": q, "cadence": c}
-
-
-def build_home_practices(scores: Dict[str, int], neuro_meta: Dict[str, Any], phys_meta: Dict[str, Any]) -> List[str]:
-    """Sugestões curtas e práticas (neuroplasticidade + integração)."""
-    out: List[str] = []
-    sc = {k: int(v or 0) for k, v in (scores or {}).items()}
-    nm = neuro_meta or {}
-    pm = phys_meta or {}
-
-    def _get(qid):
-        try:
-            return int(float(nm.get(qid, 0)))
-        except Exception:
-            return 0
-
-    # Sono
-    if sc.get("sono", 0) >= 60 or _get("np_sleep") >= 2:
-        out.append("Sono: 10–15 min de desaceleração (luz baixa, respiração 4–6, sem telas) + horário consistente 4 dias/semana.")
-
-    # Dor / fibromialgia / tensão
-    dor = 0
-    try:
-        dor = int(float(pm.get("phys_dor_score", 0)))
-    except Exception:
-        dor = 0
-    if sc.get("tensao", 0) >= 60 or dor >= 4 or _get("np_pain_fear") >= 2:
-        out.append("Dor/tensão: micro-movimento diário (5–8 min) + alongamento suave; use 'pacing' (não forçar em dias ruins).")
-
-    # Ansiedade/ruminação
-    if sc.get("ansiedade", 0) >= 60 or sc.get("ruminacao", 0) >= 60 or _get("np_stress") >= 2:
-        out.append("Regulação: 2 pausas/dia de 2 min (mãos no peito/abdômen + expiração longa) + nomear 3 sensações do corpo.")
-
-    # Pertencimento/autocrítica
-    if sc.get("pertencimento", 0) >= 55 or sc.get("humor_baixo", 0) >= 55 or _get("np_selftalk") >= 2:
-        out.append("Pertencimento: 1 frase-compromisso/dia (ex.: 'eu volto pra mim em pequenos passos') + 1 ato de autocuidado de 5 min.")
-
-    # Rede de apoio
-    if _get("np_social") >= 2:
-        out.append("Conexão: 1 micro-contato/semana (mensagem ou café curto) com alguém seguro; objetivo é vínculo, não performance.")
-
-    # Escape/compulsão
-    if _get("np_escape") >= 2:
-        out.append("Compulsão/fuga: antes de comer/rolar tela, faça 60s de respiração + pergunte 'o que eu preciso agora?' (água, pausa, acolhimento).")
-
-    # Limita a 6 itens
-    return out[:6]
-
-
 
 DOMAIN_TO_PROTOCOL = {
     "ansiedade": "FOCO – Ansiedade / Agitação",
@@ -609,145 +454,16 @@ def load_frequencies(tipo: Optional[str] = None) -> List[Dict[str, Any]]:
     return sb_select("frequencies", columns="code,nome,hz,tipo,chakra,cor,descricao", order=("code", True))
 
 
-
-def _protocol_rules_match(
-    rules: Dict[str, Any],
-    scores: Dict[str, int],
-    flags: Dict[str, bool],
-    phys_meta: Dict[str, Any],
-    neuro_meta: Dict[str, Any],
-) -> bool:
-    """Avalia regras simples (se existirem) sem quebrar quando o JSON vier diferente."""
-    if not isinstance(rules, dict) or not rules:
-        return True
-
-    # Excluir se tiver alguma flag marcada
-    excl_flags = rules.get("exclude_flags") or rules.get("exclude_if_flags") or []
-    if isinstance(excl_flags, str):
-        excl_flags = [excl_flags]
-    for f in excl_flags:
-        if flags.get(str(f), False):
-            return False
-
-    # Incluir se atingir mínimos por domínio
-    min_scores = rules.get("min_scores") or rules.get("domain_min") or {}
-    if isinstance(min_scores, dict) and min_scores:
-        for d, thr in min_scores.items():
-            try:
-                thr_i = int(float(thr))
-            except Exception:
-                thr_i = 0
-            if int(scores.get(str(d), 0) or 0) < thr_i:
-                return False
-
-    # Dor mínima (0-10) se declarado
-    try:
-        dor = int(float((phys_meta or {}).get("phys_dor_score", 0)))
-    except Exception:
-        dor = 0
-    dor_min = rules.get("dor_min")
-    if dor_min is not None:
-        try:
-            if dor < int(float(dor_min)):
-                return False
-        except Exception:
-            pass
-
-    # Prontidão mínima (neuro)
-    readiness_min = rules.get("readiness_min")
-    if readiness_min is not None:
-        try:
-            if _np_readiness_pct(neuro_meta) < int(float(readiness_min)):
-                return False
-        except Exception:
-            pass
-
-    return True
-
-
-def select_protocols(
-    scores: Dict[str, float],
-    protocols: Dict[str, Dict[str, Any]],
-    flags: Optional[Dict[str, bool]] = None,
-    phys_meta: Optional[Dict[str, Any]] = None,
-    neuro_meta: Optional[Dict[str, Any]] = None,
-    max_items: int = 4,
-) -> List[str]:
-    """Seleciona protocolos de forma mais flexível.
-
-    - Prioriza BASE (se existir)
-    - Usa domínio do protocolo (protocol_library.domain) + score do domínio
-    - Respeita regras simples (rules_json), quando existirem
-    - Mantém compatibilidade: se flags/phys/neuro não forem passados, funciona igual.
-    """
-    flags = flags or {}
-    phys_meta = phys_meta or {}
-    neuro_meta = neuro_meta or {}
-
-    # garante scores como int 0..100
-    sc = {k: int(float(v or 0)) for k, v in (scores or {}).items()}
-
-    all_names = list((protocols or {}).keys())
-    if not all_names:
-        return []
-
-    selected: List[str] = []
-    if BASE_PROTOCOL in protocols:
-        selected.append(BASE_PROTOCOL)
-
-    # ranqueia protocolos por "afinidade"
-    ranked = []
-    for name, p in protocols.items():
-        if name == BASE_PROTOCOL:
-            continue
-        dom = (p.get("domain") or "").strip()
-        dom_score = int(sc.get(dom, 0)) if dom else 0
-
-        rules = p.get("rules") or {}
-        if not _protocol_rules_match(rules, sc, flags, phys_meta, neuro_meta):
-            continue
-
-        # fallback: se não houver domínio, tenta heurística por nome
-        if not dom:
-            lname = name.lower()
-            if "sono" in lname:
-                dom_score = max(dom_score, int(sc.get("sono", 0)))
-            if "ansiedad" in lname:
-                dom_score = max(dom_score, int(sc.get("ansiedade", 0)))
-            if "exaust" in lname or "sobrecarga" in lname:
-                dom_score = max(dom_score, int(sc.get("exaustao", 0)))
-            if "pertenc" in lname or "vergonha" in lname:
-                dom_score = max(dom_score, int(sc.get("pertencimento", 0)))
-            if "rumina" in lname:
-                dom_score = max(dom_score, int(sc.get("ruminacao", 0)))
-            if "dor" in lname or "tensão" in lname or "tensao" in lname:
-                dom_score = max(dom_score, int(sc.get("tensao", 0)))
-
-        ranked.append((dom_score, name))
-
-    ranked.sort(key=lambda x: x[0], reverse=True)
-
-    # seleciona acima de um threshold, respeitando max_items
-    threshold = 55
-    for dom_score, name in ranked:
-        if len(selected) >= max_items:
-            break
-        if dom_score >= threshold and name not in selected:
-            selected.append(name)
-
-    # fallback se nada entrou
-    if len(selected) <= 1:
-        # pega top 2 do ranque mesmo que abaixo do threshold
-        for _, name in ranked[:2]:
-            if name not in selected:
-                selected.append(name)
-
-    # garante BASE no começo (se existir)
+def select_protocols(scores: Dict[str, float], protocols: Dict[str, Dict[str, Any]]) -> List[str]:
+    selected = [BASE_PROTOCOL] if BASE_PROTOCOL in protocols else []
+    for dom, sc in scores.items():
+        if sc >= 60:
+            pname = DOMAIN_TO_PROTOCOL.get(dom)
+            if pname and pname in protocols and pname not in selected:
+                selected.append(pname)
     if BASE_PROTOCOL in protocols and BASE_PROTOCOL not in selected:
         selected.insert(0, BASE_PROTOCOL)
-
-    return selected[:max_items]
-
+    return selected
 
 
 def merge_plan(selected_names: List[str], protocols: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -1219,83 +935,20 @@ def list_sessions_nova(plan_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         limit=limit,
     )
 
-
-def update_session_nova(session_id: str, status: Optional[str] = None, scheduled_date_str: Optional[str] = None, script_json: Optional[Dict[str, Any]] = None):
-    """Atualiza uma sessão (sessions_nova). Usa apenas os campos enviados."""
-    payload: Dict[str, Any] = {}
-    if status is not None:
-        payload["status"] = status
-    if scheduled_date_str is not None:
-        payload["scheduled_date"] = scheduled_date_str
-    if script_json is not None:
-        payload["script_json"] = script_json
-
-    if not payload:
-        return
-
-    if BACKEND == "postgres":
-        sets = []
-        params = []
-        if "status" in payload:
-            sets.append("status=%s")
-            params.append(payload["status"])
-        if "scheduled_date" in payload:
-            sets.append("scheduled_date=%s")
-            params.append(payload["scheduled_date"])
-        if "script_json" in payload:
-            sets.append("script_json=%s::jsonb")
-            params.append(json.dumps(payload["script_json"], ensure_ascii=False))
-        params.append(session_id)
-        qexec(f"update public.sessions_nova set {', '.join(sets)} where id=%s", tuple(params))
-        return
-
-    # supabase
-    if "script_json" in payload:
-        # supabase precisa de JSON serializável
-        payload["script_json"] = payload["script_json"]
-    sb.table("sessions_nova").update(payload).eq("id", session_id).execute()
-
-
-def delete_session_nova(session_id: str):
-    """Apaga uma sessão (sessions_nova)."""
-    if BACKEND == "postgres":
-        qexec("delete from public.sessions_nova where id=%s", (session_id,))
-        return
-    sb.table("sessions_nova").delete().eq("id", session_id).execute()
-
-
-
 def apply_intake_to_form(intake_row: Dict[str, Any]):
-    """Carrega uma anamnese salva (intake) para o estado do formulário da aba Atendimento."""
+    # Carrega answers_json p/ o estado do formulário
     ans = intake_row.get("answers_json") or {}
-
     # Campos base
     st.session_state[K("att", "complaint")] = ans.get("complaint") or intake_row.get("complaint") or ""
     st.session_state[K("att", "notes")] = ans.get("notes") or intake_row.get("notes") or ""
-    # Data (se existir no registro)
-    if ans.get("date") or intake_row.get("date"):
-        st.session_state[K("att", "date")] = ans.get("date") or intake_row.get("date")
 
-    # Questões (mesmas keys do formulário)
+    # Questões 0–4 (mesmas keys do formulário)
     for q in QUESTIONS:
-        kq = K("att", q["id"])
-        try:
-            st.session_state[kq] = int(ans.get(q["id"], st.session_state.get(kq, 0)))
-        except Exception:
-            st.session_state[kq] = 0
-
-    # Neuroplasticidade (se existir no histórico)
-    for nq in NEURO_QUESTIONS:
-        kn = K("att", nq["id"])
-        try:
-            st.session_state[kn] = int(ans.get(nq["id"], st.session_state.get(kn, 0)))
-        except Exception:
-            st.session_state[kn] = 0
-
-    # Flags (checkboxes) ficam em flags_json
-    flg = _as_dict(intake_row.get("flags_json"))
-    for f in FLAGS:
-        st.session_state[K("att", f["id"])] = bool(flg.get(f["id"], False))
+        key = K("q", q["id"])
+        if key in st.session_state:
+            st.session_state[key] = int(ans.get(key, st.session_state[key]))
+        else:
+            st.session_state[key] = int(ans.get(key, q.get("default", 2)))
 
     # --- Anamnese física (detalhes) ---
     def _as_list(v):
@@ -1317,6 +970,7 @@ def apply_intake_to_form(intake_row: Dict[str, Any]):
     st.session_state[K("att", "phys_hist")] = ans.get("phys_hist", "") or ""
     st.session_state[K("att", "phys_meds_txt")] = ans.get("phys_meds_txt", "") or ""
 
+    # Novos campos (contexto emocional + saúde)
     st.session_state[K("att", "phys_emocoes_lida")] = ans.get("phys_emocoes_lida", "Prefiro não responder") or "Prefiro não responder"
     st.session_state[K("att", "phys_emocoes_obs")] = ans.get("phys_emocoes_obs", "") or ""
 
@@ -1334,25 +988,18 @@ def apply_intake_to_form(intake_row: Dict[str, Any]):
     st.session_state[K("att", "phys_transt_alim")] = ans.get("phys_transt_alim", "Não") or "Não"
     st.session_state[K("att", "phys_transt_alim_desc")] = ans.get("phys_transt_alim_desc", "") or ""
 
-
 def reset_att_form_state():
     """Evita 'vazar' estado de um paciente para outro."""
     st.session_state.pop("last_intake_id", None)
     st.session_state[K("att", "complaint")] = ""
     st.session_state[K("att", "notes")] = ""
-    # Data padrão: hoje (se existir no app)
-    try:
-        import datetime as _dt
-        st.session_state[K("att", "date")] = _dt.date.today().isoformat()
-    except Exception:
-        st.session_state[K("att", "date")] = ""
-
     # Anamnese física (detalhes)
     st.session_state[K("att", "phys_dor_local")] = ""
     st.session_state[K("att", "phys_dor_score")] = 0
     st.session_state[K("att", "phys_dor_regioes")] = []
     st.session_state[K("att", "phys_hist")] = ""
     st.session_state[K("att", "phys_meds_txt")] = ""
+    # Novos campos
     st.session_state[K("att", "phys_emocoes_lida")] = "Prefiro não responder"
     st.session_state[K("att", "phys_emocoes_obs")] = ""
     st.session_state[K("att", "phys_alergias")] = "Não"
@@ -1365,11 +1012,9 @@ def reset_att_form_state():
     st.session_state[K("att", "phys_transt_alim")] = "Não"
     st.session_state[K("att", "phys_transt_alim_desc")] = ""
 
-    # Questões e neuro (zera)
+
     for q in QUESTIONS:
         st.session_state[K("att", q["id"])] = 0
-    for nq in NEURO_QUESTIONS:
-        st.session_state[K("att", nq["id"])] = 0
     for f in FLAGS:
         st.session_state[K("att", f["id"])] = False
 
@@ -1911,7 +1556,7 @@ def _build_receituario_data_from_plan(patient: Dict[str, Any], plan_row: Dict[st
         "patient_nasc": _fmt_date_br(patient.get("nascimento")),
         "patient_whats": patient.get("telefone") or "",
         "patient_email": patient.get("email") or "",
-        "sessao_data": _fmt_date_br(plan_date) if plan_date else _fmt_date_br(date.today()),
+        "sessao_data": _fmt_date_br(plan_date) if plan_date else _fmt_date_br(datetime.date.today()),
         "queixa": complaint or "",
         "scores": scores or {},
         "focus": focus or [],
@@ -2176,6 +1821,12 @@ def generate_receituario_pdf_bytes(data: Dict[str, Any]) -> bytes:
     doc.build(story)
     return buf.getvalue()
 
+
+# -------------------------
+# UI helpers
+# -------------------------
+def K(*parts: str) -> str:
+    return "__".join(parts)
 
 
 # --- Anamnese física (detalhes) ---
@@ -2516,71 +2167,193 @@ with tabs[0]:
 
         st.session_state["__att_patient_loaded"] = patient_id
 
-    
-    # --- Organização da aba Atendimento ---
-    att_tabs = st.tabs([
-        "📝 Anamnese",
-        "🧠 Neuroplasticidade",
-        "🧩 Plano (preview)",
-        "📅 Sessões + Receituário",
-        "📚 Histórico",
-    ])
+    # --- histórico do paciente (ver / carregar anamnese salva) ---
+    with st.expander("📚 Histórico do paciente (anamneses e planos)", expanded=True):
+        # Anamneses
+        try:
+            intakes_hist = list_intakes(patient_id, limit=30)
+        except Exception as e:
+            intakes_hist = []
+            st.warning(f"Não consegui carregar anamneses: {e}")
 
-    # -------------------------
-    # 1) ANAMNESE
-    # -------------------------
-    with att_tabs[0]:
+        if not intakes_hist:
+            st.info("Sem anamneses registradas para este paciente ainda.")
+        else:
+            rows = []
+            for r in intakes_hist:
+                scores = _as_dict(r.get("scores_json"))
+                top = sorted(scores.items(), key=lambda x: float(x[1]) if isinstance(x[1], (int, float)) else 0.0, reverse=True)[:3]
+                top_s = ", ".join([f"{k}:{float(v):.0f}%" if isinstance(v, (int, float)) else f"{k}:{v}" for k, v in top]) if top else ""
+                rows.append({
+                    "quando": str(r.get("created_at") or "")[:19],
+                    "queixa": (r.get("complaint") or ""),
+                    "top_scores": top_s,
+                    "id": str(r.get("id") or "")[-6:],
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            opts = []
+            for r in intakes_hist:
+                when = str(r.get("created_at") or "")[:10]
+                cid = str(r.get("id") or "")[-4:]
+                comp = (r.get("complaint") or "—")
+                comp = comp if len(comp) <= 60 else comp[:57] + "..."
+                opts.append(f"{when} • {comp} • {cid}")
+
+            sel_i = st.selectbox(
+                "Escolha uma anamnese para ver detalhes / carregar no formulário",
+                opts,
+                key=K("hist", "intake_sel"),
+            )
+            sel_idx = opts.index(sel_i)
+            rsel = intakes_hist[sel_idx]
+
+            d1, d2 = st.columns(2)
+            with d1:
+                st.markdown("**Scores**")
+                sc = _as_dict(rsel.get("scores_json"))
+                if sc:
+                    sdf = pd.DataFrame([{"dominio": k, "score": v} for k, v in sorted(sc.items(), key=lambda x: x[1], reverse=True)])
+                    st.dataframe(sdf, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("—")
+            with d2:
+                st.markdown("**Flags / notas**")
+                flags_view = _as_dict(rsel.get("flags_json"))
+                if flags_view:
+                    st.dataframe(json_to_df(flags_view, name="flag"), use_container_width=True, hide_index=True)
+                else:
+                    st.caption("—")
+                if (rsel.get("notes") or ""):
+                    st.write(rsel.get("notes"))
+
+            bcolA, bcolB = st.columns(2)
+            if bcolA.button("Carregar esta anamnese no formulário", type="primary", use_container_width=True, key=K("hist", "load_intake")):
+                apply_intake_to_form(rsel)
+                st.success("Anamnese carregada no formulário.")
+                st.rerun()
+
+            if bcolB.button("Limpar formulário", use_container_width=True, key=K("hist", "clear_form")):
+                reset_att_form_state()
+                st.success("Formulário limpo.")
+                st.rerun()
+
+        # Planos
+        st.divider()
+        st.markdown("**PLANOS GERADOS**")
+        try:
+            plans_hist = list_plans(patient_id, limit=10)
+        except Exception as e:
+            plans_hist = []
+            st.warning(f"Não consegui carregar planos: {e}")
+
+        if not plans_hist:
+            st.caption("Nenhum plano gerado ainda.")
+        else:
+            p0 = plans_hist[0]
+            st.write(
+                f"Último plano: {str(p0.get('created_at') or '')[:19]} • sessões={p0.get('sessions_qty')} • cadência={p0.get('cadence_days')} dias"
+            )
+
+            try:
+                sess = list_sessions_nova(p0.get("id"), limit=50)
+            except Exception as e:
+                sess = []
+                st.caption(f"Não consegui ler sessions_nova: {e}")
+
+            if sess:
+                st.dataframe(
+                    pd.DataFrame([{"n": r.get("session_n"), "data": r.get("scheduled_date"), "status": r.get("status")} for r in sess]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("Sem sessões_nova para o último plano (ou tabela ainda não criada).")
+
         col1, col2 = st.columns([2, 1])
         with col1:
-            st.text_input(
-                "Queixa principal (curta)",
-                key=K("att", "complaint"),
-                placeholder="Ex.: dores difusas + ansiedade + cansaço",
-            )
+            complaint = st.text_input("Queixa principal (curta)", key=K("att", "complaint"))
         with col2:
-            # data do atendimento (para registro)
-            if K("att", "date") not in st.session_state:
-                st.session_state[K("att", "date")] = date.today()
-            st.date_input("Data do atendimento", key=K("att", "date"))
+            atend_date = st.date_input("Data", value=date.today(), key=K("att", "date"))
 
+        st.markdown("**Anamnese (0–4)**")
         st.caption(SCALE_0_4_HELP)
 
-        # Perguntas por domínio (mais legível)
-        by_domain: Dict[str, List[Dict[str, Any]]] = {d: [] for d in DOMAINS}
+        with st.expander("🧭 Resumo dos domínios (motivo de cada um)"):
+            df_dom = build_domains_summary_df()
+            st.dataframe(df_dom, use_container_width=True, hide_index=True)
+            st.caption("Use este resumo como referência rápida: quando o score estiver alto, priorize a direção terapêutica sugerida e combine com o contexto físico/alertas.")
+
+
+        # Perguntas separadas por abas (por domínio) para facilitar visualização/foco
+        q_by_domain = {d: [q for q in QUESTIONS if q.get("domain") == d] for d in DOMAINS}
+
+        tab_labels = [
+            _DOMAIN_LABEL.get("sono", "Sono"),
+            _DOMAIN_LABEL.get("ansiedade", "Ansiedade"),
+            _DOMAIN_LABEL.get("humor_baixo", "Humor baixo"),
+            _DOMAIN_LABEL.get("exaustao", "Exaustão"),
+            _DOMAIN_LABEL.get("pertencimento", "Pertencimento"),
+            _DOMAIN_LABEL.get("tensao", "Tensão"),
+            _DOMAIN_LABEL.get("ruminacao", "Ruminação"),
+        ]
+        tab_domains = ["sono", "ansiedade", "humor_baixo", "exaustao", "pertencimento", "tensao", "ruminacao"]
+
+        an_tabs = st.tabs(tab_labels)
+
+        answers: Dict[str, int] = {}
+        for _tab, _dom in zip(an_tabs, tab_domains):
+            with _tab:
+                cols_q = st.columns(2)
+                qs = q_by_domain.get(_dom, [])
+                for i, q in enumerate(qs):
+                    with cols_q[i % 2]:
+                        kq = K("att", q["id"])
+
+                        if kq in st.session_state:
+
+                            answers[q["id"]] = st.slider(q["label"], 0, 4, key=kq, help=SCALE_0_4_HELP)
+
+                        else:
+
+                            answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=kq, help=SCALE_0_4_HELP)
+
+        # Garantia (caso a lista de perguntas mude no futuro)
         for q in QUESTIONS:
-            by_domain.setdefault(q["domain"], []).append(q)
+            kq = K("att", q["id"])
+            if q["id"] not in answers:
+                try:
+                    answers[q["id"]] = int(st.session_state.get(kq, 0))
+                except Exception:
+                    answers[q["id"]] = 0
 
-        for d in DOMAINS:
-            qs = by_domain.get(d) or []
-            if not qs:
-                continue
-            with st.expander(f"🧩 {(_DOMAIN_LABEL.get(d, d))} — perguntas", expanded=(d in ["ansiedade", "tensao", "sono"])):
-                for q in qs:
-                    st.slider(q["label"], 0, 4, step=1, key=K("att", q["id"]))
-                # mostra o score atual do domínio (preview)
-                _tmp_answers = {qq["id"]: int(st.session_state.get(K("att", qq["id"]), 0)) for qq in QUESTIONS}
-                _tmp_scores = compute_scores(_tmp_answers)
-                st.caption(f"Score atual (pré-ajustes): **{_tmp_scores.get(d, 0)}%**")
+        st.markdown("**Sinais de atenção**")
+        flags: Dict[str, bool] = {}
+        fcols = st.columns(2)
+        for i, f in enumerate(FLAGS):
+            with fcols[i % 2]:
+                kf = K("att", f["id"])
 
-        # Flags / sensibilidades
-        with st.expander("⚠️ Flags / sensibilidades (para segurança e ajustes)", expanded=False):
-            cA, cB = st.columns(2)
-            for i, f in enumerate(FLAGS):
-                col = cA if i % 2 == 0 else cB
-                with col:
-                    st.checkbox(f["label"], key=K("att", f["id"]))
+                if kf in st.session_state:
 
-        # Anamnese física (detalhes)
-        with st.expander("🩺 Anamnese física e contexto (entra no cálculo)", expanded=False):
-            c1, c2 = st.columns([2, 1])
+                    flags[f["id"]] = st.checkbox(f["label"], key=kf)
+
+                else:
+
+                    flags[f["id"]] = st.checkbox(f["label"], value=False, key=kf)
+
+        
+        with st.expander("🩺 Anamnese física (detalhes)", expanded=False):
+            # Dor / queixas
+            c1, c2 = st.columns(2)
             with c1:
-                st.text_input("Onde dói? (local principal / como descreve?)", key=K("att", "phys_dor_local"))
+                dor_local = st.text_input("Dor / queixa principal (onde dói?)", key=K("att", "phys_dor_local"))
             with c2:
-                st.slider("Intensidade da dor (0=sem dor; 10=máxima)", 0, 10, key=K("att", "phys_dor_score"))
+                dor_score = st.slider("Intensidade da dor (0=sem dor; 10=máxima)", 0, 10, key=K("att", "phys_dor_score"))
 
-            st.multiselect("Regiões afetadas (se fizer sentido)", PHYS_DOR_REGIOES, key=K("att", "phys_dor_regioes"))
-            st.text_area("Histórico de saúde / cirurgias relevantes", height=80, key=K("att", "phys_hist"))
-            st.text_area("Medicamentos / tratamentos atuais", height=80, key=K("att", "phys_meds_txt"))
+            dor_regioes = st.multiselect("Regiões afetadas (marque se fizer sentido)", PHYS_DOR_REGIOES, key=K("att", "phys_dor_regioes"))
+            hist_txt = st.text_area("Histórico de saúde / cirurgias relevantes", height=80, key=K("att", "phys_hist"))
+            meds_txt = st.text_area("Medicamentos / tratamentos atuais", height=80, key=K("att", "phys_meds_txt"))
 
             st.markdown("**Aspectos emocionais e contexto**")
             EMO_OPTS = [
@@ -2610,220 +2383,437 @@ with tabs[0]:
 
             d1, d2 = st.columns(2)
             with d1:
-                st.selectbox("Como você lida com suas emoções?", EMO_OPTS, key=K("att", "phys_emocoes_lida"))
+                emocoes = st.selectbox("Como você lida com suas emoções?", EMO_OPTS, key=K("att", "phys_emocoes_lida"))
             with d2:
-                st.selectbox("Atualmente possui conflito familiar?", CONFLITO_OPTS, key=K("att", "phys_conflito_nivel"))
+                conflito = st.selectbox("Atualmente possui conflito familiar?", CONFLITO_OPTS, key=K("att", "phys_conflito_nivel"))
 
-            st.text_area("Se sim, descreva (opcional)", height=68, key=K("att", "phys_conflito_desc"))
-            st.text_input("Observações sobre emoções (opcional)", key=K("att", "phys_emocoes_obs"))
+            conflito_desc = st.text_area("Se sim, descreva (opcional)", height=68, key=K("att", "phys_conflito_desc"))
+            emocoes_obs = st.text_input("Observações sobre emoções (opcional)", key=K("att", "phys_emocoes_obs"))
 
             st.markdown("**Saúde e antecedentes**")
             e1, e2 = st.columns(2)
             with e1:
-                st.selectbox("Tem alguma alergia?", SIMNAO_OPTS, key=K("att", "phys_alergias"))
-                st.text_input("Se sim, qual(is)?", key=K("att", "phys_alergias_quais"))
+                alergias = st.selectbox("Tem alguma alergia?", SIMNAO_OPTS, key=K("att", "phys_alergias"))
+                alergias_quais = st.text_input("Se sim, qual(is)?", key=K("att", "phys_alergias_quais"))
             with e2:
-                st.selectbox("Já fez alguma cirurgia?", SIMNAO_OPTS, key=K("att", "phys_cirurgias"))
-                st.text_input("Se sim, qual(is)?", key=K("att", "phys_cirurgias_quais"))
+                cirurgias = st.selectbox("Já fez alguma cirurgia?", SIMNAO_OPTS, key=K("att", "phys_cirurgias"))
+                cirurgias_quais = st.text_input("Se sim, qual(is)?", key=K("att", "phys_cirurgias_quais"))
 
-            st.text_area("Histórico familiar relevante (físico ou mental/psicológico) — se houver", height=80, key=K("att", "phys_hist_familia"))
+            hist_familia = st.text_area(
+                "Histórico familiar relevante (físico ou mental/psicológico) — se houver",
+                height=80,
+                key=K("att", "phys_hist_familia"),
+            )
 
             f1, f2 = st.columns(2)
             with f1:
-                st.selectbox("Possui transtorno alimentar?", TRANST_ALIM_OPTS, key=K("att", "phys_transt_alim"))
+                transt_alim = st.selectbox("Possui transtorno alimentar?", TRANST_ALIM_OPTS, key=K("att", "phys_transt_alim"))
             with f2:
-                st.text_input("Se sim/suspeita, qual/observações?", key=K("att", "phys_transt_alim_desc"))
+                transt_desc = st.text_input("Se sim/suspeita, qual/observações?", key=K("att", "phys_transt_alim_desc"))
 
-        st.text_area("Notas do terapeuta (opcional)", height=110, key=K("att", "notes"))
+        phys_meta = {
+            "phys_dor_local": (dor_local or ""),
+            "phys_dor_score": int(dor_score or 0),
+            "phys_dor_regioes": (dor_regioes or []),
+            "phys_hist": (hist_txt or ""),
+            "phys_meds_txt": (meds_txt or ""),
+            "phys_emocoes_lida": (emocoes or "Prefiro não responder"),
+            "phys_emocoes_obs": (emocoes_obs or ""),
+            "phys_alergias": (alergias or "Não"),
+            "phys_alergias_quais": (alergias_quais or ""),
+            "phys_cirurgias": (cirurgias or "Não"),
+            "phys_cirurgias_quais": (cirurgias_quais or ""),
+            "phys_hist_familia": (hist_familia or ""),
+            "phys_conflito_nivel": (conflito or "Não"),
+            "phys_conflito_desc": (conflito_desc or ""),
+            "phys_transt_alim": (transt_alim or "Não"),
+            "phys_transt_alim_desc": (transt_desc or ""),
+        }
 
-    # -------------------------
-    # 2) NEUROPLASTICIDADE
-    # -------------------------
-    with att_tabs[1]:
-        st.markdown("### Perguntas de neuroplasticidade (entram no cálculo)")
-        st.caption("Aqui você mede o quanto hábitos/ambiente estão facilitando ou travando a mudança (0=ok, 4=muito difícil/presente).")
+        notes = st.text_area("Notas do terapeuta (opcional)", height=100, key=K("att", "notes"))
 
-        for nq in NEURO_QUESTIONS:
-            st.slider(nq["label"], 0, 4, step=1, key=K("att", nq["id"]))
+        # Respostas para salvar no banco (inclui detalhes físicos em JSON)
+        answers_store = dict(answers)
+        answers_store.update(phys_meta or {})
 
-        neuro_meta_preview = {nq["id"]: int(st.session_state.get(K("att", nq["id"]), 0)) for nq in NEURO_QUESTIONS}
-        readiness_preview = _np_readiness_pct(neuro_meta_preview)
-        st.metric("Prontidão (neuroplasticidade)", f"{readiness_preview}%", help="Quanto maior, mais fácil sustentar mudanças com micro-passos e consistência.")
+        scores_raw = compute_scores(answers)
+        scores, ctx_phys = adjust_scores_with_phys(scores_raw, phys_meta)
+        focus = pick_focus(scores, top_n=3)
+        qty, cadence = sessions_from_scores(scores)
 
-    # -------------------------
-    # Consolida dados do formulário (uma única fonte de verdade)
-    # -------------------------
-    complaint = (st.session_state.get(K("att", "complaint")) or "").strip()
-    atend_date = st.session_state.get(K("att", "date")) or date.today()
-    notes = (st.session_state.get(K("att", "notes")) or "").strip()
+        try:
+            protocols = load_protocols()
+        except Exception as e:
+            protocols = {}
+            st.warning(f"Não consegui ler protocol_library: {e}")
 
-    answers = {q["id"]: int(st.session_state.get(K("att", q["id"]), 0) or 0) for q in QUESTIONS}
-    flags = {f["id"]: bool(st.session_state.get(K("att", f["id"]), False)) for f in FLAGS}
-
-    phys_meta = {
-        "phys_dor_local": (st.session_state.get(K("att", "phys_dor_local")) or "").strip(),
-        "phys_dor_score": int(st.session_state.get(K("att", "phys_dor_score")) or 0),
-        "phys_dor_regioes": (st.session_state.get(K("att", "phys_dor_regioes")) or []),
-        "phys_hist": (st.session_state.get(K("att", "phys_hist")) or "").strip(),
-        "phys_meds_txt": (st.session_state.get(K("att", "phys_meds_txt")) or "").strip(),
-        "phys_emocoes_lida": (st.session_state.get(K("att", "phys_emocoes_lida")) or "Prefiro não responder"),
-        "phys_emocoes_obs": (st.session_state.get(K("att", "phys_emocoes_obs")) or "").strip(),
-        "phys_alergias": (st.session_state.get(K("att", "phys_alergias")) or "Não"),
-        "phys_alergias_quais": (st.session_state.get(K("att", "phys_alergias_quais")) or "").strip(),
-        "phys_cirurgias": (st.session_state.get(K("att", "phys_cirurgias")) or "Não"),
-        "phys_cirurgias_quais": (st.session_state.get(K("att", "phys_cirurgias_quais")) or "").strip(),
-        "phys_hist_familia": (st.session_state.get(K("att", "phys_hist_familia")) or "").strip(),
-        "phys_conflito_nivel": (st.session_state.get(K("att", "phys_conflito_nivel")) or "Não"),
-        "phys_conflito_desc": (st.session_state.get(K("att", "phys_conflito_desc")) or "").strip(),
-        "phys_transt_alim": (st.session_state.get(K("att", "phys_transt_alim")) or "Não"),
-        "phys_transt_alim_desc": (st.session_state.get(K("att", "phys_transt_alim_desc")) or "").strip(),
-    }
-
-    neuro_meta = {nq["id"]: int(st.session_state.get(K("att", nq["id"]), 0) or 0) for nq in NEURO_QUESTIONS}
-
-    # para salvar no banco (inclui físico + neuro em JSON)
-    answers_store = dict(answers)
-    answers_store.update(phys_meta or {})
-    answers_store.update(neuro_meta or {})
-
-    # -------------------------
-    # Calcula scores e plano (em um único lugar)
-    # -------------------------
-    scores_raw = compute_scores(answers)
-    scores_phys, ctx_phys = adjust_scores_with_phys(scores_raw, phys_meta)
-    scores, ctx_neuro = adjust_scores_with_neuro(scores_phys, neuro_meta)
-
-    focus = pick_focus(scores, top_n=3)
-    qty0, cadence0 = sessions_from_scores(scores)
-    qty, cadence, sess_ctx = adjust_sessions_with_neuro(qty0, cadence0, ctx_neuro)
-
-    home_practices = build_home_practices(scores, neuro_meta, phys_meta)
-
-    try:
-        protocols = load_protocols()
-    except Exception as e:
-        protocols = {}
-        st.warning(f"Não consegui ler protocol_library: {e}")
-
-    # seleção automática + controle do terapeuta
-    selected_auto = select_protocols(scores, protocols, flags=flags, phys_meta=phys_meta, neuro_meta=neuro_meta)
-
-    # -------------------------
-    # 3) PLANO (PREVIEW)
-    # -------------------------
-    with att_tabs[2]:
-        st.markdown("### Preview do plano terapêutico (com lógica + ajustes)")
-        if not complaint:
-            st.warning("Preencha a queixa principal na aba **Anamnese** para registrar corretamente.")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Sessões sugeridas", f"{qty}", help="Baseado nos 3 domínios mais altos + ajustes (físico e neuro).")
-        c2.metric("Cadência", f"{cadence} dias", help="Intervalo sugerido entre sessões (ajustado pela prontidão).")
-        c3.metric("Prontidão", f"{int(ctx_neuro.get('readiness_pct', 100))}%", help="Neuroplasticidade (hábitos/obstáculos).")
-
-        st.markdown("**Top focos (3)**")
-        st.write(", ".join([f"{_DOMAIN_LABEL.get(d, d)} ({int(s)}%)" for d, s in focus]) if focus else "—")
-
-        # Scores completos
-        with st.expander("📊 Scores por domínio (inclui ajustes físico + neuro)", expanded=True):
-            sdf = pd.DataFrame([{"domínio": _DOMAIN_LABEL.get(k, k), "score_%": v} for k, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)])
-            st.dataframe(sdf, use_container_width=True, hide_index=True)
-            if ctx_phys.get("ajustes"):
-                st.caption("Ajustes (físico): " + " | ".join(ctx_phys.get("ajustes")[:6]))
-            if ctx_neuro.get("ajustes"):
-                st.caption("Ajustes (neuro): " + " | ".join(ctx_neuro.get("ajustes")[:6]))
-
-        # Protocolos: automático + possibilidade de ajustar
-        st.markdown("### Protocolos")
-        all_protocols = list(protocols.keys()) if isinstance(protocols, dict) else []
-        mode = st.radio("Seleção de protocolos", ["Automática (recomendada)", "Manual"], horizontal=True, key=K("att", "prot_mode"))
-        if mode.startswith("Manual"):
-            selected_names = st.multiselect("Escolha os protocolos do plano", all_protocols, default=selected_auto, key=K("att", "prot_manual"))
-        else:
-            extras = st.multiselect("Adicionar protocolos extras (opcional)", [p for p in all_protocols if p not in selected_auto], default=[], key=K("att", "prot_extras"))
-            removes = st.multiselect("Remover protocolos (opcional)", selected_auto, default=[], key=K("att", "prot_remove"))
-            selected_names = [p for p in selected_auto if p not in set(removes)]
-            for p in extras:
-                if p not in selected_names:
-                    selected_names.append(p)
-
-        # Gera plano integrado
+        selected_names = select_protocols(scores, protocols)
         plan = merge_plan(selected_names, protocols)
 
-        # Alertas adicionais (físico + flags)
+        # Alertas adicionais vindos da anamnese física / sensibilidades
         plan.setdefault("alertas", [])
         def _add_alert(msg: str):
             if msg and msg not in plan["alertas"]:
                 plan["alertas"].append(msg)
 
-        for a in (ctx_phys.get("alertas") or []):
-            _add_alert(a)
-        for a in (ctx_neuro.get("alertas") or []):
-            _add_alert(a)
 
-        # Flags de segurança (ajustes)
-        if flags.get("flag_sound"):
-            _add_alert("Sensibilidade a som: reduzir volume / evitar binaural, usar música neutra ou silêncio.")
-        if flags.get("flag_light"):
-            _add_alert("Sensibilidade à luz: iniciar com cromoterapia suave e observar conforto.")
+        # Contexto vindo da anamnese física (sem mudar muito o layout):
+        if isinstance(ctx_phys, dict):
+            for a in (ctx_phys.get("alertas") or []):
+                _add_alert(a)
+
         if flags.get("flag_back"):
-            _add_alert("Dificuldade deitar de costas: adaptar posicionamento na cama de cristal.")
+            _add_alert("Dificuldade para deitar de costas: ajuste posição/apoios na cama de cristal.")
         if flags.get("flag_perfume"):
-            _add_alert("Sensibilidade a cheiros: evitar óleos fortes, preferir opções suaves/ventiladas.")
+            _add_alert("Sensibilidade a cheiros/perfumes: evite aromas fortes; use aromaterapia bem suave ou omita.")
+        if flags.get("flag_heat"):
+            _add_alert("Sensibilidade ao calor: mantenha ambiente fresco e confortável.")
+        if flags.get("flag_feet"):
+            _add_alert("Sensibilidade nos pés: evite pressão intensa; inicie com toques leves.")
 
-        # Binaural e frequências
-        audio = build_audio_from_scores(scores, flags)
-        freq_codes = pick_frequencies(scores, flags)
-        freq_details = get_frequencies_by_codes(freq_codes) if freq_codes else []
-        plan["audio"] = audio
-        plan["frequencias"] = {"codes": freq_codes, "details": freq_details}
 
-        # Tarefas (neuroplasticidade)
-        plan["tarefas_casa"] = home_practices
-        plan["ctx_neuro"] = ctx_neuro
-        plan["ctx_phys"] = ctx_phys
-        plan["sess_ctx"] = sess_ctx
 
-        # Sessões (scripts)
-        scripts = build_session_scripts(qty, cadence, focus, selected_names, protocols, audio, freq_codes)
+        # Condutas para alertas (entra no plano e nas sessões)
+        condutas_alerta = build_alert_actions(plan.get("alertas", []), flags, phys_meta, ctx_phys)
+        plan["condutas_alerta"] = condutas_alerta
 
-        # Preview visual
-        with st.expander("🧾 Resumo do plano integrado", expanded=True):
-            st.markdown("**Alertas / cuidados**")
-            if plan.get("alertas"):
-                for a in plan["alertas"][:10]:
-                    st.write("• " + str(a))
-            else:
-                st.caption("—")
+        audio_block = {
+            "binaural": {
+                "carrier_hz": float(st.session_state[KEY_CARRIER]),
+                "beat_hz": float(st.session_state[KEY_BEAT]),
+                "duracao_s": int(st.session_state[KEY_DUR_S]),
+            },
+            "bg": {
+                "gain": float(st.session_state[KEY_BG_GAIN]),
+                "note": "música de fundo é selecionada no computador (não é salva no banco).",
+            },
+        }
+        extra_freq_codes = st.session_state.get("extra_freq_codes") or []
 
-            st.markdown("**Tarefas / integração (neuroplasticidade)**")
-            if home_practices:
-                for t in home_practices:
-                    st.write("• " + t)
-            else:
-                st.caption("—")
+        scripts = build_session_scripts(qty, cadence, focus, selected_names, protocols, audio_block, extra_freq_codes)
+        for s in scripts:
+            s["alertas"] = plan.get("alertas", [])
+            s["condutas_alerta"] = plan.get("condutas_alerta", [])
+            s["contexto_fisico"] = ctx_phys
+            s["phys_meta"] = phys_meta
 
-            st.markdown("**Binaural / áudio sugerido**")
-            if audio:
-                st.code(audio_to_text(audio), language="text")
-            else:
-                st.caption("—")
 
-            st.markdown("**Frequências sugeridas (códigos)**")
-            st.write(", ".join(freq_codes) if freq_codes else "—")
-            if freq_details:
-                st.dataframe(pd.DataFrame(freq_details), use_container_width=True, hide_index=True)
+        # -------------------------
+        # Sugestões (Atendimento): Cama de Cristal + Frequências
+        # -------------------------
+        cama_rows: List[Dict[str, Any]] = []
+        proto_binaural_rows: List[Dict[str, Any]] = []
 
-        with st.expander("📅 Sessões pré-definidas (preview)", expanded=False):
-            st.dataframe(pd.DataFrame(scripts), use_container_width=True, hide_index=True)
+        for pname in selected_names:
+            c = (protocols.get(pname, {}) or {}).get("content", {}) or {}
 
-        # Ações (salvar / gerar)
+            cama = c.get("cama_cristal")
+            if cama is None:
+                cama = c.get("cama")
+            if cama is not None:
+                cama_rows.append(
+                    {
+                        "protocolo": pname,
+                        "cama_cristal": cama if isinstance(cama, str) else json.dumps(cama, ensure_ascii=False),
+                    }
+                )
+
+            b = c.get("binaural")
+            if b:
+                if isinstance(b, dict):
+                    row = {"protocolo": pname}
+                    # campos comuns
+                    for k in ["carrier_hz", "beat_hz", "duracao_s", "duracao_min", "obs", "nota"]:
+                        if k in b:
+                            row[k] = b.get(k)
+                    proto_binaural_rows.append(row)
+                else:
+                    proto_binaural_rows.append({"protocolo": pname, "binaural": str(b)})
+
+        extra_freq_details = get_frequencies_by_codes(extra_freq_codes)
+        # -------------------------
+        # Resumo em grids (Scores / Foco / Sessões / Protocolos / Plano)
+        # -------------------------
         st.divider()
-        b1, b2 = st.columns(2)
+        st.markdown("## Resumo do atendimento")
+        # --- DataFrames base para os grids (evita NameError) ---
+        df_scores = pd.DataFrame(
+            [{"domínio": _DOMAIN_LABEL.get(k, k), "score_%": v} for k, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
+        )
 
-        if b1.button("💾 Salvar anamnese", type="primary", use_container_width=True, key=K("att", "save_intake")):
-            if not complaint:
-                st.warning("Informe a queixa principal antes de salvar.")
+        df_focus = pd.DataFrame(
+            [
+                {
+                    "prioridade": i + 1,
+                    "domínio": _DOMAIN_LABEL.get(d, d),
+                    "score_%": float(sc),
+                    "protocolo_sugerido": DOMAIN_TO_PROTOCOL.get(d, "") or "",
+                }
+                for i, (d, sc) in enumerate(focus or [])
+            ]
+        )
+
+        try:
+            semanas_est = max(1, int(math.ceil((int(qty) * int(cadence)) / 7)))
+        except Exception:
+            semanas_est = ""
+        dt_ini = _fmt_date_br(scripts[0]["scheduled_date"]) if scripts else ""
+        dt_fim = _fmt_date_br(scripts[-1]["scheduled_date"]) if scripts else ""
+        df_sessoes = pd.DataFrame(
+            [
+                {
+                    "qtd_sessões": qty,
+                    "cadência_dias": cadence,
+                    "duração_estimada_semanas": semanas_est,
+                    "início_previsto": dt_ini,
+                    "fim_previsto": dt_fim,
+                }
+            ]
+        )
+
+        prot_rows = []
+        for name in (selected_names or []):
+            c = (protocols.get(name, {}) or {}).get("content", {}) or {}
+            prot_rows.append(
+                {
+                    "protocolo": name,
+                    "domínio": (protocols.get(name, {}) or {}).get("domain") or "",
+                    "tem_cama_cristal": bool(c.get("cama_cristal") or c.get("cama")),
+                    "tem_binaural": bool(c.get("binaural")),
+                    "tem_cristais": bool(c.get("cristais")),
+                    "tem_fito": bool(c.get("fito")),
+                }
+            )
+        df_protocolos = pd.DataFrame(prot_rows) if prot_rows else pd.DataFrame(columns=["protocolo", "domínio"])
+
+        def _items_txt(x):
+            return _join_list(x, sep="; ")
+
+        plan_rows = [
+            {"categoria": "Chakras prioritários", "itens": _items_txt(plan.get("chakras_prioritarios"))},
+            {"categoria": "Emoções prioritárias", "itens": _items_txt(plan.get("emocoes_prioritarias"))},
+            {"categoria": "Cristais sugeridos", "itens": _items_txt(plan.get("cristais_sugeridos"))},
+            {"categoria": "Fito sugerida", "itens": _items_txt(plan.get("fito_sugerida"))},
+            {"categoria": "Alertas / cuidados do protocolo", "itens": _items_txt(plan.get("alertas"))},
+        ]
+        df_plano = pd.DataFrame(plan_rows)
+
+        # 1) Pontuações (anamnese) + Foco (Top 3)
+        r1c1, r1c2 = st.columns(2)
+        with r1c1:
+            st.markdown("### Pontuações (anamnese)")
+            st.dataframe(df_scores, use_container_width=True, hide_index=True)
+
+        with r1c2:
+            st.markdown("### Foco (Top 3)")
+            if not df_focus.empty:
+                st.dataframe(df_focus, use_container_width=True, hide_index=True)
             else:
+                st.caption("—")
+
+        # 2) Sessões sugeridas + Frequências extras (codes)
+        r2c1, r2c2 = st.columns(2)
+        with r2c1:
+            st.markdown("### Sessões sugeridas")
+            st.dataframe(df_sessoes, use_container_width=True, hide_index=True)
+
+        with r2c2:
+            st.markdown("### Frequências extras (codes)")
+            if extra_freq_codes:
+                st.dataframe(pd.DataFrame([{"code": c} for c in extra_freq_codes]), use_container_width=True, hide_index=True)
+            else:
+                st.caption("Sem frequências extras selecionadas.")
+
+        # 3) Protocolos + Plano consolidado
+        r3c1, r3c2 = st.columns(2)
+        with r3c1:
+            st.markdown("### Protocolos selecionados")
+            if not df_protocolos.empty:
+                st.dataframe(df_protocolos, use_container_width=True, hide_index=True)
+            else:
+                st.caption("—")
+
+        with r3c2:
+            st.markdown("### Plano consolidado (resumo)")
+            st.dataframe(df_plano, use_container_width=True, hide_index=True)
+
+        st.markdown("### 🚨 Alertas e condutas")
+        if plan.get("condutas_alerta"):
+            df_ca = pd.DataFrame(plan.get("condutas_alerta"), columns=["Prioridade","Categoria","Detalhe","Conduta sugerida"])
+            st.dataframe(df_ca, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Sem alertas relevantes (além dos marcadores normais do plano).")
+
+        # 4) Sugestão — Cama de Cristal (tudo em grid)
+        st.divider()
+        st.markdown("## Sugestão — Cama de Cristal")
+
+        cc1, cc2, cc3 = st.columns(3)
+        with cc1:
+            st.markdown("**Chakras prioritários**")
+            st.dataframe(json_to_df(plan.get("chakras_prioritarios"), "chakra"), use_container_width=True, hide_index=True)
+        with cc2:
+            st.markdown("**Cristais sugeridos**")
+            st.dataframe(json_to_df(plan.get("cristais_sugeridos"), "cristal"), use_container_width=True, hide_index=True)
+        with cc3:
+            st.markdown("**Fito sugerida**")
+            st.dataframe(json_to_df(plan.get("fito_sugerida"), "fito"), use_container_width=True, hide_index=True)
+
+        st.markdown("**Cama de cristal por protocolo**")
+        if cama_rows:
+            st.dataframe(pd.DataFrame(cama_rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Nenhum plano de cama_cristal cadastrado nos protocolos selecionados.")
+
+        # 5) Sugestão — Frequências / Binaural (tudo em grid)
+        st.divider()
+        st.markdown("## Sugestão — Frequências / Binaural")
+
+        carrier_now = float(st.session_state.get(KEY_CARRIER, 220.0))
+        beat_now = float(st.session_state.get(KEY_BEAT, 10.0))
+        dur_now = int(st.session_state.get(KEY_DUR_S, 120))
+        bt_now = abs(float(beat_now))
+        fL_now = max(20.0, carrier_now - bt_now / 2.0)
+        fR_now = carrier_now + bt_now / 2.0
+
+        fcol1, fcol2 = st.columns(2)
+        with fcol1:
+            st.markdown("### Binaural atual")
+            st.dataframe(
+                pd.DataFrame([{
+                    "carrier_hz": carrier_now,
+                    "beat_hz": beat_now,
+                    "duracao_s": dur_now,
+                    "L_hz": round(fL_now, 2),
+                    "R_hz": round(fR_now, 2),
+                }]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.markdown("### Áudio (binaural) ")
+            st.dataframe(json_to_df(audio_block.get("binaural"), "valor"), use_container_width=True, hide_index=True)
+
+        with fcol2:
+            st.markdown("### Binaural sugerido pelos protocolos")
+            if proto_binaural_rows:
+                st.dataframe(pd.DataFrame(proto_binaural_rows), use_container_width=True, hide_index=True)
+            else:
+                st.caption("Sem binaural sugerido cadastrado nos protocolos selecionados.")
+
+        if extra_freq_codes:
+            st.markdown("### Frequências extras — detalhes")
+            if extra_freq_details:
+                df_fd = pd.DataFrame(extra_freq_details)
+                pref_cols = [c for c in ["code", "nome", "hz", "tipo", "chakra", "cor", "descricao"] if c in df_fd.columns]
+                st.dataframe(df_fd[pref_cols] if pref_cols else df_fd, use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(pd.DataFrame([{"code": c} for c in extra_freq_codes]), use_container_width=True, hide_index=True)
+        st.subheader("Sessões pré-definidas")
+        st.dataframe(
+            pd.DataFrame([{"sessao": s["session_n"], "data": s["scheduled_date"], "status": s["status"]} for s in scripts]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+        st.subheader("🖨️ Receituário para impressão")
+
+        with st.expander("Gerar receituário (puxa as informações salvas do paciente)", expanded=False):
+            # Escolhe um plano já salvo (último por padrão)
+            try:
+                _plans = list_plans(patient_id)
+            except Exception as e:
+                _plans = []
+                st.warning(f"Não consegui listar planos: {e}")
+
+            if not _plans:
+                st.info("Ainda não há plano salvo para este paciente. Gere um plano e salve antes de imprimir.")
+            else:
+                def _plan_label(p):
+                    dt = p.get("created_at") or (p.get("plan_json") or {}).get("date") or ""
+                    dt = _fmt_date_br(dt) if dt else ""
+                    pid = str(p.get("id") or "")[-6:]
+                    qty = p.get("sessions_qty") or ""
+                    cad = p.get("cadence_days") or ""
+                    extra = f" • {qty} sessões/{cad}d" if qty and cad else ""
+                    return f"{dt or 'sem data'} — Plano {pid}{extra}"
+
+                plan_labels = [_plan_label(p) for p in _plans]
+                idx_default = 0
+                rx_sel = st.selectbox("Plano para imprimir", plan_labels, index=idx_default, key=K("rx", "plan_sel"))
+                plan_idx = plan_labels.index(rx_sel)
+                plan_row = _plans[plan_idx]
+                plan_id = plan_row.get("id")
+
+                # Sessões vinculadas
+                try:
+                    sess_rows = list_sessions_nova(plan_id)
+                except Exception as e:
+                    sess_rows = []
+                    st.warning(f"Não consegui listar sessions_nova: {e}")
+
+                # Dados do paciente
+                pat = get_patient(patient_id) or {"id": patient_id}
+
+                rx_data = _build_receituario_data_from_plan(pat, plan_row, sess_rows)
+
+                st.caption("Dica: mantenha o template DOCX no mesmo diretório do app (Receituario_Claudiafito_Template.docx) ou envie abaixo.")
+                tpl_up = st.file_uploader("Template DOCX (opcional)", type=["docx"], key=K("rx", "tpl"))
+
+                colrx1, colrx2 = st.columns(2)
+                with colrx1:
+                    if st.button("Gerar receituário (DOCX)", use_container_width=True, key=K("rx", "gen_docx")):
+                        try:
+                            tpl_io = io.BytesIO(tpl_up.read()) if tpl_up else None
+                            st.session_state["rx_docx_bytes"] = generate_receituario_docx_bytes(rx_data, template_file=tpl_io)
+                            st.success("DOCX gerado.")
+                        except Exception as e:
+                            st.error(f"Erro ao gerar DOCX: {e}")
+
+                with colrx2:
+                    if st.button("Gerar receituário (PDF)", use_container_width=True, key=K("rx", "gen_pdf")):
+                        try:
+                            st.session_state["rx_pdf_bytes"] = generate_receituario_pdf_bytes(rx_data)
+                            st.success("PDF gerado.")
+                        except Exception as e:
+                            st.error(f"Erro ao gerar PDF: {e}")
+
+                dcol1, dcol2 = st.columns(2)
+                with dcol1:
+                    if st.session_state.get("rx_docx_bytes"):
+                        st.download_button(
+                            "⬇️ Baixar DOCX preenchido",
+                            data=st.session_state["rx_docx_bytes"],
+                            file_name=f"receituario_{(pat.get('nome') or 'paciente').strip().replace(' ','_')}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True,
+                            key=K("rx", "dl_docx"),
+                        )
+                with dcol2:
+                    if HAS_REPORTLAB and st.session_state.get("rx_pdf_bytes"):
+                        st.download_button(
+                            "⬇️ Baixar PDF",
+                            data=st.session_state["rx_pdf_bytes"],
+                            file_name=f"receituario_{(pat.get('nome') or 'paciente').strip().replace(' ','_')}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key=K("rx", "dl_pdf"),
+                        )
+
+                with st.expander("Prévia do que vai no receituário", expanded=False):
+                    st.write("Paciente:", rx_data.get("patient_nome"))
+                    st.write("Queixa:", rx_data.get("queixa"))
+                    st.write("Foco:", rx_data.get("focus"))
+                    st.write("Binaural:", rx_data.get("binaural_txt"))
+                    st.write("Frequências auxiliares:", rx_data.get("freq_aux_txt"))
+                    st.write("Cama de cristal:", rx_data.get("cama_txt"))
+                    st.write("Cristais:", rx_data.get("cristais_txt"))
+                    st.write("Fito:", rx_data.get("fito_txt"))
+
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("Salvar anamnese", use_container_width=True, key=K("att", "save_intake")):
                 try:
                     intake_id = insert_intake(patient_id, complaint, answers_store, scores, flags, notes)
                     st.session_state["last_intake_id"] = intake_id
@@ -2831,314 +2821,42 @@ with tabs[0]:
                 except Exception as e:
                     st.error(f"Erro ao salvar anamnese: {e}")
 
-        if b2.button("✨ Gerar plano terapêutico + criar sessões", type="primary", use_container_width=True, key=K("att", "save_plan")):
-            if not complaint:
-                st.warning("Informe a queixa principal antes de gerar o plano.")
-            else:
+        with b2:
+            if st.button("Gerar plano terapêutico + criar sessões ", type="primary", use_container_width=True, key=K("att", "gen_plan")):
                 try:
                     intake_id = st.session_state.get("last_intake_id")
                     if not intake_id:
                         intake_id = insert_intake(patient_id, complaint, answers_store, scores, flags, notes)
                         st.session_state["last_intake_id"] = intake_id
 
-                    # Salva o plano com tudo que foi calculado (inclui ctx físico/neuro e tarefas)
                     plan_id = insert_plan(
-                        intake_id=intake_id,
                         patient_id=patient_id,
+                        intake_id=intake_id,
                         focus=focus,
                         selected_names=selected_names,
                         sessions_qty=qty,
                         cadence_days=cadence,
                         plan_json={
+                            "date": str(atend_date),
                             "complaint": complaint,
-                            "atend_date": str(atend_date),
+            "phys_meta": phys_meta,
+                            "ctx_phys": ctx_phys,
+                    "condutas_alerta": condutas_alerta,
+
                             "scores": scores,
-                            "scores_raw": scores_raw,
-                            "flags": flags,
-                            "phys_meta": phys_meta,
-                            "neuro_meta": neuro_meta,
-                            "plan": plan,
-                            "protocols": selected_names,
+                            "answers": answers_store,
                             "focus": focus,
-                            "sessions_qty": qty,
-                            "cadence_days": cadence,
-                            "scripts": scripts,
+                            "selected_protocols": selected_names,
+                            "plan": plan,
+                            "audio": audio_block,
+                            "frequencias": [{"code": c} for c in extra_freq_codes],
+                            "cama_cristal_sugestao": cama_rows,
+                            "binaural_protocolos_sugestao": proto_binaural_rows,
                         },
                     )
-                    st.session_state["last_plan_id"] = plan_id
-
-                    # cria sessões no banco
                     for s in scripts:
-                        insert_session_nova(
-                            plan_id=plan_id,
-                            patient_id=patient_id,
-                            session_n=int(s.get("session_n") or 0),
-                            scheduled_date_str=str(s.get("scheduled_date") or ""),
-                            status=str(s.get("status") or "pendente"),
-                            script=s,
-                        )
+                        insert_session_nova(plan_id, patient_id, int(s["session_n"]), s["scheduled_date"], s["status"], s)
 
-                    st.success("Plano e sessões criados! Vá para a aba **Sessões + Receituário** para registrar cada sessão.")
+                    st.success(f"Plano criado e sessões geradas em sessions_nova! plan_id={plan_id}")
                 except Exception as e:
                     st.error(f"Erro ao gerar plano/sessões: {e}")
-
-    # -------------------------
-    # 4) SESSÕES + RECEITUÁRIO
-    # -------------------------
-    with att_tabs[3]:
-        st.markdown("### Sessões do paciente (registrar, editar e apagar)")
-        try:
-            plans_hist = list_plans(patient_id, limit=20)
-        except Exception as e:
-            plans_hist = []
-            st.warning(f"Não consegui carregar planos: {e}")
-
-        if not plans_hist:
-            st.info("Nenhum plano salvo ainda. Gere um plano na aba **Plano (preview)**.")
-        else:
-            # seletor de plano
-            plan_labels = []
-            for p in plans_hist:
-                pid = p.get("id")
-                when = str(p.get("created_at") or "")[:19]
-                plan_labels.append((pid, f"{when} • sessões={p.get('sessions_qty')} • {p.get('cadence_days')}d • {str(pid)[-4:]}"))
-
-            last_pid = st.session_state.get("last_plan_id")
-            default_ix = 0
-            if last_pid:
-                for i, (pid, _) in enumerate(plan_labels):
-                    if pid == last_pid:
-                        default_ix = i
-                        break
-
-            pid_sel = st.selectbox("Plano", [lbl for _, lbl in plan_labels], index=default_ix, key=K("sess", "plan_sel"))
-            plan_id = plan_labels[[lbl for _, lbl in plan_labels].index(pid_sel)][0]
-            plan_row = next((p for p in plans_hist if p.get("id") == plan_id), None) or {}
-            cadence_days = int(plan_row.get("cadence_days") or 10)
-
-            try:
-                sess_rows = list_sessions_nova(plan_id, limit=100)
-            except Exception as e:
-                sess_rows = []
-                st.warning(f"Não consegui carregar sessions_nova: {e}")
-
-            if sess_rows:
-                st.dataframe(pd.DataFrame([{"n": r.get("session_n"), "data": r.get("scheduled_date"), "status": r.get("status")} for r in sess_rows]), use_container_width=True, hide_index=True)
-
-                # seleciona sessão para registrar
-                sess_opts = []
-                for r in sess_rows:
-                    sid = r.get("id")
-                    sess_opts.append((sid, f"Sessão {r.get('session_n')} • {r.get('scheduled_date')} • {r.get('status')}"))
-
-                sid_default = sess_opts[0][0]
-                sid_sel_label = st.selectbox("Selecionar sessão", [lbl for _, lbl in sess_opts], index=0, key=K("sess", "sess_sel"))
-                session_id = sess_opts[[lbl for _, lbl in sess_opts].index(sid_sel_label)][0]
-                srow = next((r for r in sess_rows if r.get("id") == session_id), None) or {}
-
-                sj = _as_dict(srow.get("script_json"))
-                registro = _as_dict(sj.get("registro")) if sj else {}
-
-                st.markdown("#### Registro da sessão")
-                c1, c2 = st.columns(2)
-                with c1:
-                    status = st.selectbox("Status", ["pendente", "realizada", "remarcada", "cancelada"], index=["pendente","realizada","remarcada","cancelada"].index(str(srow.get("status") or "pendente")), key=K("sess", "status"))
-                with c2:
-                    # data realizada (opcional)
-                    use_done = st.checkbox("Informar data realizada", value=bool(registro.get("realizada_em")), key=K("sess", "use_done"))
-                    done_val = date.today()
-                    if registro.get("realizada_em"):
-                        try:
-                            done_val = date.fromisoformat(str(registro.get("realizada_em"))[:10])
-                        except Exception:
-                            done_val = date.today()
-                    if use_done:
-                        done_date = st.date_input("Data realizada", value=done_val, key=K("sess", "done_date"))
-                    else:
-                        done_date = None
-
-                terapeuta = st.text_area("Observações do terapeuta", height=120, value=str(registro.get("nota_terapeuta") or ""), key=K("sess", "nota_terapeuta"))
-                paciente_relato = st.text_area("Relato do paciente (opcional)", height=90, value=str(registro.get("relato_paciente") or ""), key=K("sess", "relato_paciente"))
-                tarefas = st.text_area("Práticas / tarefas até a próxima sessão", height=90, value=str(registro.get("tarefas") or ""), key=K("sess", "tarefas"))
-                fito_casa = st.text_area("Fito / orientações para casa (opcional)", height=90, value=str(registro.get("fito_casa") or ""), key=K("sess", "fito_casa"))
-
-                # salvar / limpar / apagar
-                a1, a2, a3 = st.columns(3)
-                if a1.button("💾 Salvar registro", use_container_width=True, key=K("sess", "save_reg")):
-                    # atualiza script_json preservando o restante
-                    sj = sj or {}
-                    sj["registro"] = {
-                        "realizada_em": str(done_date) if done_date else "",
-                        "nota_terapeuta": terapeuta,
-                        "relato_paciente": paciente_relato,
-                        "tarefas": tarefas,
-                        "fito_casa": fito_casa,
-                    }
-                    update_session_nova(session_id=session_id, status=status, script_json=sj)
-                    st.success("Registro salvo!")
-                    st.rerun()
-
-                if a2.button("🧼 Limpar registro", use_container_width=True, key=K("sess", "clear_reg")):
-                    sj = sj or {}
-                    sj["registro"] = {}
-                    update_session_nova(session_id=session_id, script_json=sj)
-                    st.success("Registro limpo!")
-                    st.rerun()
-
-                confirm_del = st.checkbox("Confirmo que quero apagar esta sessão", value=False, key=K("sess", "confirm_del"))
-                if a3.button("🗑️ Apagar sessão", use_container_width=True, key=K("sess", "del_sess")):
-                    if not confirm_del:
-                        st.warning("Marque a confirmação antes de apagar.")
-                    else:
-                        delete_session_nova(session_id)
-                        st.success("Sessão apagada.")
-                        st.rerun()
-
-                st.divider()
-                st.markdown("#### Adicionar sessão extra (opcional)")
-                if st.button("➕ Criar sessão extra", use_container_width=True, key=K("sess", "add_one")):
-                    try:
-                        max_n = max(int(r.get("session_n") or 0) for r in sess_rows) if sess_rows else 0
-                        last_date_str = str(sess_rows[-1].get("scheduled_date") or "")
-                        try:
-                            last_dt = date.fromisoformat(last_date_str[:10])
-                        except Exception:
-                            last_dt = date.today()
-                        next_dt = last_dt + timedelta(days=cadence_days)
-                        new_script = (sess_rows[-1].get("script_json") or {}) if sess_rows else {}
-                        # limpa registro
-                        if isinstance(new_script, dict):
-                            new_script = dict(new_script)
-                            new_script.pop("registro", None)
-                        insert_session_nova(plan_id, patient_id, max_n + 1, str(next_dt), "pendente", _as_dict(new_script))
-                        st.success("Sessão extra criada.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao criar sessão extra: {e}")
-            else:
-                st.info("Sem sessões neste plano (ainda).")
-
-            st.divider()
-            st.markdown("### Receituário para impressão (DOCX/PDF)")
-            try:
-                # precisa do plano_json e das sessions para montar
-                pjson = _as_dict(plan_row.get("plan_json"))
-                # se scripts não estiverem no plan_json, usa sessions_nova
-                sessions_for_rx = sess_rows or []
-                rx_data = _build_receituario_data_from_plan(plan_row, sessions_for_rx, patient_hint=None)
-                # Se houver registro da sessão selecionada, injeta como 'fito_txt' para sair no receituário
-                try:
-                    if sess_rows:
-                        # pega a primeira sessão 'pendente' ou a selecionada, se existir
-                        pass
-                except Exception:
-                    pass
-
-                dcol1, dcol2 = st.columns(2)
-                with dcol1:
-                    if HAS_DOCX:
-                        docx_bytes = generate_receituario_docx_bytes(rx_data)
-                        st.download_button("⬇️ Baixar DOCX", data=docx_bytes, file_name="receituario.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True, key=K("rx", "dl_docx"))
-                    else:
-                        st.warning("Dependência 'python-docx' não disponível. Instale para exportar DOCX.")
-                with dcol2:
-                    if HAS_REPORTLAB:
-                        pdf_bytes = generate_receituario_pdf_bytes(rx_data)
-                        st.download_button("⬇️ Baixar PDF", data=pdf_bytes, file_name="receituario.pdf", mime="application/pdf", use_container_width=True, key=K("rx", "dl_pdf"))
-                    else:
-                        st.caption("PDF indisponível (sem reportlab). Você pode usar o DOCX e imprimir.")
-            except Exception as e:
-                st.error(f"Não consegui gerar receituário: {e}")
-
-    # -------------------------
-    # 5) HISTÓRICO
-    # -------------------------
-    with att_tabs[4]:
-        st.markdown("### Histórico do paciente (anamneses e planos)")
-        # Anamneses
-        try:
-            intakes_hist = list_intakes(patient_id, limit=30)
-        except Exception as e:
-            intakes_hist = []
-            st.warning(f"Não consegui carregar anamneses: {e}")
-
-        if not intakes_hist:
-            st.info("Sem anamneses registradas para este paciente ainda.")
-        else:
-            rows = []
-            for r in intakes_hist:
-                scores_h = _as_dict(r.get("scores_json"))
-                top = sorted(scores_h.items(), key=lambda x: float(x[1]) if isinstance(x[1], (int, float)) else 0.0, reverse=True)[:3]
-                top_s = ", ".join([f"{k}:{float(v):.0f}%" if isinstance(v, (int, float)) else f"{k}:{v}" for k, v in top]) if top else ""
-                rows.append({
-                    "quando": str(r.get("created_at") or "")[:19],
-                    "queixa": (r.get("complaint") or ""),
-                    "top_scores": top_s,
-                    "id": str(r.get("id") or "")[-6:],
-                })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-            opts = []
-            for r in intakes_hist:
-                when = str(r.get("created_at") or "")[:10]
-                cid = str(r.get("id") or "")[-4:]
-                comp = (r.get("complaint") or "—")
-                comp = comp if len(comp) <= 60 else comp[:57] + "..."
-                opts.append(f"{when} • {comp} • {cid}")
-
-            sel_i = st.selectbox("Carregar uma anamnese no formulário", opts, key=K("hist", "intake_sel"))
-            sel_idx = opts.index(sel_i)
-            rsel = intakes_hist[sel_idx]
-
-            d1, d2 = st.columns(2)
-            with d1:
-                st.markdown("**Scores**")
-                sc = _as_dict(rsel.get("scores_json"))
-                if sc:
-                    sdf = pd.DataFrame([{"dominio": k, "score": v} for k, v in sorted(sc.items(), key=lambda x: x[1], reverse=True)])
-                    st.dataframe(sdf, use_container_width=True, hide_index=True)
-                else:
-                    st.caption("—")
-            with d2:
-                st.markdown("**Flags / notas**")
-                flags_view = _as_dict(rsel.get("flags_json"))
-                if flags_view:
-                    st.dataframe(json_to_df(flags_view, name="flag"), use_container_width=True, hide_index=True)
-                else:
-                    st.caption("—")
-                if (rsel.get("notes") or ""):
-                    st.write(rsel.get("notes"))
-
-            bcolA, bcolB = st.columns(2)
-            if bcolA.button("Carregar esta anamnese", type="primary", use_container_width=True, key=K("hist", "load_intake")):
-                apply_intake_to_form(rsel)
-                st.success("Anamnese carregada.")
-                st.rerun()
-
-            if bcolB.button("Limpar formulário", use_container_width=True, key=K("hist", "clear_form")):
-                reset_att_form_state()
-                st.success("Formulário limpo.")
-                st.rerun()
-
-        # Planos (apenas resumo)
-        st.divider()
-        try:
-            plans_hist = list_plans(patient_id, limit=10)
-        except Exception as e:
-            plans_hist = []
-            st.warning(f"Não consegui carregar planos: {e}")
-
-        if not plans_hist:
-            st.caption("Nenhum plano gerado ainda.")
-        else:
-            st.dataframe(
-                pd.DataFrame([{
-                    "quando": str(p.get("created_at") or "")[:19],
-                    "sessões": p.get("sessions_qty"),
-                    "cadência_dias": p.get("cadence_days"),
-                    "protocolos": ", ".join(_as_dict(p.get("selected_protocols")) or []),
-                    "id": str(p.get("id") or "")[-6:],
-                } for p in plans_hist]),
-                use_container_width=True,
-                hide_index=True,
-            )
