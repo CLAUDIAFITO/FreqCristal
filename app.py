@@ -16,6 +16,15 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+# -------------------------
+# UI helpers
+# -------------------------
+
+def K(*parts: str) -> str:
+    """Cria keys consistentes para o st.session_state."""
+    return "__".join(parts)
+
+
 # --- Optional dependency: reportlab (PDF)
 try:
     import reportlab  # type: ignore
@@ -1257,35 +1266,38 @@ def delete_session_nova(session_id: str):
 
 
 def apply_intake_to_form(intake_row: Dict[str, Any]):
-    # Carrega answers_json p/ o estado do formulário
+    """Carrega uma anamnese salva (intake) para o estado do formulário da aba Atendimento."""
     ans = intake_row.get("answers_json") or {}
+
     # Campos base
     st.session_state[K("att", "complaint")] = ans.get("complaint") or intake_row.get("complaint") or ""
     st.session_state[K("att", "notes")] = ans.get("notes") or intake_row.get("notes") or ""
+    # Data (se existir no registro)
+    if ans.get("date") or intake_row.get("date"):
+        st.session_state[K("att", "date")] = ans.get("date") or intake_row.get("date")
 
-    # Questões 0–4 (mesmas keys do formulário)
-for q in QUESTIONS:
-    kq = K("att", q["id"])
-    try:
-        st.session_state[kq] = int(ans.get(q["id"], st.session_state.get(kq, 0)))
-    except Exception:
-        st.session_state[kq] = 0
+    # Questões (mesmas keys do formulário)
+    for q in QUESTIONS:
+        kq = K("att", q["id"])
+        try:
+            st.session_state[kq] = int(ans.get(q["id"], st.session_state.get(kq, 0)))
+        except Exception:
+            st.session_state[kq] = 0
 
-# Neuroplasticidade (se existir no histórico)
-for nq in NEURO_QUESTIONS:
-    kn = K("att", nq["id"])
-    try:
-        st.session_state[kn] = int(ans.get(nq["id"], st.session_state.get(kn, 0)))
-    except Exception:
-        st.session_state[kn] = 0
+    # Neuroplasticidade (se existir no histórico)
+    for nq in NEURO_QUESTIONS:
+        kn = K("att", nq["id"])
+        try:
+            st.session_state[kn] = int(ans.get(nq["id"], st.session_state.get(kn, 0)))
+        except Exception:
+            st.session_state[kn] = 0
 
-# Flags (checkboxes) ficam em flags_json
-flg = _as_dict(intake_row.get("flags_json"))
-for f in FLAGS:
-    st.session_state[K("att", f["id"])] = bool(flg.get(f["id"], False))
+    # Flags (checkboxes) ficam em flags_json
+    flg = _as_dict(intake_row.get("flags_json"))
+    for f in FLAGS:
+        st.session_state[K("att", f["id"])] = bool(flg.get(f["id"], False))
 
-# --- Anamnese física (detalhes) ---
-
+    # --- Anamnese física (detalhes) ---
     def _as_list(v):
         if isinstance(v, list):
             return v
@@ -1305,7 +1317,6 @@ for f in FLAGS:
     st.session_state[K("att", "phys_hist")] = ans.get("phys_hist", "") or ""
     st.session_state[K("att", "phys_meds_txt")] = ans.get("phys_meds_txt", "") or ""
 
-    # Novos campos (contexto emocional + saúde)
     st.session_state[K("att", "phys_emocoes_lida")] = ans.get("phys_emocoes_lida", "Prefiro não responder") or "Prefiro não responder"
     st.session_state[K("att", "phys_emocoes_obs")] = ans.get("phys_emocoes_obs", "") or ""
 
@@ -1323,18 +1334,25 @@ for f in FLAGS:
     st.session_state[K("att", "phys_transt_alim")] = ans.get("phys_transt_alim", "Não") or "Não"
     st.session_state[K("att", "phys_transt_alim_desc")] = ans.get("phys_transt_alim_desc", "") or ""
 
+
 def reset_att_form_state():
     """Evita 'vazar' estado de um paciente para outro."""
     st.session_state.pop("last_intake_id", None)
     st.session_state[K("att", "complaint")] = ""
     st.session_state[K("att", "notes")] = ""
+    # Data padrão: hoje (se existir no app)
+    try:
+        import datetime as _dt
+        st.session_state[K("att", "date")] = _dt.date.today().isoformat()
+    except Exception:
+        st.session_state[K("att", "date")] = ""
+
     # Anamnese física (detalhes)
     st.session_state[K("att", "phys_dor_local")] = ""
     st.session_state[K("att", "phys_dor_score")] = 0
     st.session_state[K("att", "phys_dor_regioes")] = []
     st.session_state[K("att", "phys_hist")] = ""
     st.session_state[K("att", "phys_meds_txt")] = ""
-    # Novos campos
     st.session_state[K("att", "phys_emocoes_lida")] = "Prefiro não responder"
     st.session_state[K("att", "phys_emocoes_obs")] = ""
     st.session_state[K("att", "phys_alergias")] = "Não"
@@ -1347,12 +1365,12 @@ def reset_att_form_state():
     st.session_state[K("att", "phys_transt_alim")] = "Não"
     st.session_state[K("att", "phys_transt_alim_desc")] = ""
 
-for q in QUESTIONS:
-    st.session_state[K("att", q["id"])] = 0
-for nq in NEURO_QUESTIONS:
-    st.session_state[K("att", nq["id"])] = 0
-for f in FLAGS:
-
+    # Questões e neuro (zera)
+    for q in QUESTIONS:
+        st.session_state[K("att", q["id"])] = 0
+    for nq in NEURO_QUESTIONS:
+        st.session_state[K("att", nq["id"])] = 0
+    for f in FLAGS:
         st.session_state[K("att", f["id"])] = False
 
 
@@ -2158,12 +2176,6 @@ def generate_receituario_pdf_bytes(data: Dict[str, Any]) -> bytes:
     doc.build(story)
     return buf.getvalue()
 
-
-# -------------------------
-# UI helpers
-# -------------------------
-def K(*parts: str) -> str:
-    return "__".join(parts)
 
 
 # --- Anamnese física (detalhes) ---
