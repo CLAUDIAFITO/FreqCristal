@@ -117,179 +117,6 @@ SCALE_0_4_HELP = (
 )
 
 
-
-
-# -----------------------------
-# V3 — Atendimento (Mapa 0–10) + Neuroplasticidade
-# Observação: mantemos DOMAINS/protocolos existentes para NÃO mudar a base de dados.
-# O mapa 0–10 é convertido em scores (0–100%) por domínio, usados na seleção de protocolos e sessões.
-# -----------------------------
-SCALE_0_10_HELP = (
-    "📏 **Escala 0–10** (mapa rápido): **0 = nada/ok (bom)** · 5 = moderado · **10 = muito intenso/sempre (ruim)**."
-)
-
-V3_SYMPTOMS = [
-    # Corpo
-    {"id": "sym_dor", "label": "Dor no corpo (geral)", "group": "corpo"},
-    {"id": "sym_rigidez", "label": "Rigidez / travamento (articulações / músculos)", "group": "corpo"},
-    {"id": "sym_sono", "label": "Sono ruim (insônia / acorda cansada)", "group": "corpo"},
-    {"id": "sym_fadiga", "label": "Cansaço / fadiga", "group": "corpo"},
-    {"id": "sym_sobrecarga", "label": "Sobrecarga / excesso de responsabilidades", "group": "corpo"},
-
-    # Mente
-    {"id": "sym_ansiedade", "label": "Ansiedade / agitação", "group": "mente"},
-    {"id": "sym_ruminacao", "label": "Pensamentos repetitivos / ruminação", "group": "mente"},
-    {"id": "sym_irritabilidade", "label": "Irritabilidade / impaciência", "group": "mente"},
-
-    # Pertencimento
-    {"id": "sym_falta_pertenc", "label": "Falta de pertencimento / desconexão", "group": "pertenc"},
-    {"id": "sym_autocritica", "label": "Autojulgamento / vergonha", "group": "pertenc"},
-    {"id": "sym_isolamento", "label": "Isolamento / dificuldade de pedir ajuda", "group": "pertenc"},
-]
-
-V3_NEURO = [
-    # 0–4 (quanto maior, melhor) exceto 'alerta' (quanto maior, pior)
-    {"id": "np_alerta", "label": "Meu corpo/mente fica em alerta com facilidade", "invert": True},
-    {"id": "np_pausa", "label": "Consigo pausar 30–60s antes de reagir", "invert": False},
-    {"id": "np_recurso", "label": "Tenho pelo menos 1 recurso que me acalma (respiração, oração, música etc.)", "invert": False},
-    {"id": "np_adesao", "label": "Consigo praticar um exercício curto todos os dias", "invert": False},
-]
-
-V3_TIME_OPTIONS = [
-    (2, "2 min/dia"),
-    (5, "5 min/dia"),
-    (10, "10 min/dia"),
-    (15, "15 min/dia"),
-]
-
-def _clamp_int(x: Any, lo: int, hi: int) -> int:
-    try:
-        xi = int(float(x))
-    except Exception:
-        xi = lo
-    return lo if xi < lo else (hi if xi > hi else xi)
-
-def _pct_from_0_10(v: int) -> float:
-    v = _clamp_int(v, 0, 10)
-    return round((v / 10.0) * 100.0, 1)
-
-def _pct_from_0_4(v: int) -> float:
-    v = _clamp_int(v, 0, 4)
-    return round((v / 4.0) * 100.0, 1)
-
-def compute_core_pillars(sym: Dict[str, int]) -> Dict[str, float]:
-    """4 pilares principais (0–100)."""
-    dor = _pct_from_0_10(sym.get("sym_dor", 0))
-    rig = _pct_from_0_10(sym.get("sym_rigidez", 0))
-    sono = _pct_from_0_10(sym.get("sym_sono", 0))
-    fad  = _pct_from_0_10(sym.get("sym_fadiga", 0))
-    sob  = _pct_from_0_10(sym.get("sym_sobrecarga", 0))
-
-    ans  = _pct_from_0_10(sym.get("sym_ansiedade", 0))
-    rum  = _pct_from_0_10(sym.get("sym_ruminacao", 0))
-    irr  = _pct_from_0_10(sym.get("sym_irritabilidade", 0))
-
-    per  = _pct_from_0_10(sym.get("sym_falta_pertenc", 0))
-    aj   = _pct_from_0_10(sym.get("sym_autocritica", 0))
-    iso  = _pct_from_0_10(sym.get("sym_isolamento", 0))
-
-    # Pilares (médias ponderadas leves)
-    return {
-        "Dor/Fibro": round((dor * 0.7 + rig * 0.3), 1),
-        "Sistema nervoso": round((ans * 0.45 + rum * 0.35 + irr * 0.20), 1),
-        "Burnout/Cansaço": round((fad * 0.45 + sob * 0.35 + sono * 0.20), 1),
-        "Pertencimento": round((per * 0.45 + aj * 0.35 + iso * 0.20), 1),
-    }
-
-def compute_readiness_pct(neuro: Dict[str, int], time_min: int) -> float:
-    """Prontidão para neuroplasticidade (0–100)."""
-    # itens positivos
-    pausa = _clamp_int(neuro.get("np_pausa", 0), 0, 4)
-    recurso = _clamp_int(neuro.get("np_recurso", 0), 0, 4)
-    adesao = _clamp_int(neuro.get("np_adesao", 0), 0, 4)
-    base = (pausa + recurso + adesao) / 12.0  # 0..1
-
-    # alerta (negativo)
-    alerta = _clamp_int(neuro.get("np_alerta", 0), 0, 4)  # alto = pior
-    mod_alerta = 1.0 - (alerta / 6.0)  # 0.33..1
-    if mod_alerta < 0.33:
-        mod_alerta = 0.33
-
-    # tempo disponível (pequeno bônus)
-    time_min = _clamp_int(time_min, 2, 15)
-    time_bonus = 1.0
-    if time_min >= 10:
-        time_bonus = 1.08
-    elif time_min >= 5:
-        time_bonus = 1.04
-
-    pct = base * mod_alerta * time_bonus * 100.0
-    return round(0.0 if pct < 0 else (100.0 if pct > 100 else pct), 1)
-
-def compute_scores_v3(sym: Dict[str, int]) -> Tuple[Dict[str, float], Dict[str, float]]:
-    """Converte o mapa 0–10 em scores por domínio existente (DOMAINS), e também devolve os pilares (4)."""
-    pillars = compute_core_pillars(sym)
-
-    # Domínios existentes (0–100)
-    sono = _pct_from_0_10(sym.get("sym_sono", 0))
-    ansiedade = round(pillars["Sistema nervoso"], 1)
-    ruminacao = _pct_from_0_10(sym.get("sym_ruminacao", 0))
-    exaustao = round(pillars["Burnout/Cansaço"], 1)
-    pertenc = round(pillars["Pertencimento"], 1)
-    tensao = round(pillars["Dor/Fibro"], 1)
-
-    # humor baixo: aproximação (não diagnostica) — combina exaustão + pertencimento + sono
-    humor = round((exaustao * 0.45 + pertenc * 0.35 + sono * 0.20), 1)
-
-    scores = {
-        "sono": float(sono),
-        "ansiedade": float(ansiedade),
-        "humor_baixo": float(humor),
-        "exaustao": float(exaustao),
-        "pertencimento": float(pertenc),
-        "tensao": float(tensao),
-        "ruminacao": float(ruminacao),
-    }
-    # garante todas as chaves de DOMAINS
-    for d in DOMAINS:
-        scores.setdefault(d, 0.0)
-    return scores, pillars
-
-def apply_neuro_to_sessions(qty: int, cadence: int, readiness_pct: float, dor_0_10: int) -> Tuple[int, int, List[str]]:
-    """Ajusta quantidade/cadência de sessões conforme prontidão e dor (sem travar o terapeuta)."""
-    qty_i = int(qty or 0)
-    cad_i = int(cadence or 0)
-    notes: List[str] = []
-
-    dor_0_10 = _clamp_int(dor_0_10, 0, 10)
-
-    # dor alta: mais suporte e cadência menor
-    if dor_0_10 >= 7:
-        qty_i += 1
-        cad_i = max(7, cad_i - 2)
-        notes.append("Dor alta → +1 sessão e cadência um pouco mais curta.")
-    elif dor_0_10 >= 4:
-        cad_i = max(7, cad_i - 1)
-        notes.append("Dor moderada → cadência ligeiramente mais curta.")
-
-    # prontidão baixa: manter mais próximo e mais suporte
-    if readiness_pct < 35:
-        qty_i += 2
-        cad_i = max(7, cad_i - 3)
-        notes.append("Prontidão baixa (neuroplasticidade) → +2 sessões e cadência mais curta.")
-    elif readiness_pct < 55:
-        qty_i += 1
-        cad_i = max(7, cad_i - 1)
-        notes.append("Prontidão média-baixa → +1 sessão e cadência levemente menor.")
-    elif readiness_pct > 80:
-        # prontidão alta: pode espaçar um pouco (se não houver dor alta)
-        if dor_0_10 <= 3:
-            cad_i = min(21, cad_i + 2)
-            notes.append("Prontidão alta → pode espaçar um pouco a cadência.")
-    qty_i = 1 if qty_i < 1 else (12 if qty_i > 12 else qty_i)
-    cad_i = 7 if cad_i < 7 else (30 if cad_i > 30 else cad_i)
-    return qty_i, cad_i, notes
-
 QUESTIONS = [
     {"id": "sono_q1", "label": "Dificuldade para pegar no sono", "domain": "sono", "weight": 1.0},
     {"id": "sono_q2", "label": "Acorda no meio da noite / sono leve", "domain": "sono", "weight": 1.0},
@@ -1037,42 +864,6 @@ def insert_session_nova(plan_id: str, patient_id: str, session_n: int, scheduled
         sb_insert("sessions_nova", payload)
 
 
-
-def update_session_nova(session_id: str, updates: Dict[str, Any]):
-    """Atualiza campos de sessions_nova (status/notes/scheduled_date/script_json)."""
-    if not session_id:
-        return
-    allowed = {"status", "notes", "scheduled_date", "script_json"}
-    upd = {k: v for k, v in (updates or {}).items() if k in allowed}
-
-    if not upd:
-        return
-
-    if BACKEND == "postgres":
-        sets = []
-        params = []
-        for k, v in upd.items():
-            if k == "script_json":
-                sets.append("script_json=%s::jsonb")
-                params.append(json.dumps(v, ensure_ascii=False))
-            else:
-                sets.append(f"{k}=%s")
-                params.append(v)
-        params.append(session_id)
-        qexec(f"update public.sessions_nova set {', '.join(sets)} where id=%s", tuple(params))
-    else:
-        # supabase
-        sb.table("sessions_nova").update(upd).eq("id", session_id).execute()
-
-def delete_session_nova(session_id: str):
-    """Apaga uma sessão (mantém as outras)."""
-    if not session_id:
-        return
-    if BACKEND == "postgres":
-        qexec("delete from public.sessions_nova where id=%s", (session_id,))
-    else:
-        sb.table("sessions_nova").delete().eq("id", session_id).execute()
-
 # -------------------------
 # HISTÓRICO: intakes / plans (para analisar e reaproveitar anamnese salva)
 # -------------------------
@@ -1145,40 +936,19 @@ def list_sessions_nova(plan_id: str, limit: int = 50) -> List[Dict[str, Any]]:
     )
 
 def apply_intake_to_form(intake_row: Dict[str, Any]):
-    """Carrega answers_json para o estado do formulário (compatível com versões antigas e V3)."""
+    # Carrega answers_json p/ o estado do formulário
     ans = intake_row.get("answers_json") or {}
-    if isinstance(ans, str):
-        try:
-            ans = json.loads(ans)
-        except Exception:
-            ans = {}
-
     # Campos base
-    st.session_state[K("att", "complaint")] = intake_row.get("complaint") or ""
-    st.session_state[K("att", "notes")] = intake_row.get("notes") or ""
+    st.session_state[K("att", "complaint")] = ans.get("complaint") or intake_row.get("complaint") or ""
+    st.session_state[K("att", "notes")] = ans.get("notes") or intake_row.get("notes") or ""
 
-    # --- V3: mapa 0–10 ---
-    for s in V3_SYMPTOMS:
-        sid = s["id"]
-        if K("att", sid) not in st.session_state:
-            st.session_state[K("att", sid)] = 0
-        # aceita tanto 'sym_*' quanto versões antigas com o mesmo nome
-        st.session_state[K("att", sid)] = _clamp_int(ans.get(sid, st.session_state.get(K("att", sid), 0)), 0, 10)
-
-    # --- V3: neuroplasticidade ---
-    for q in V3_NEURO:
-        qid = q["id"]
-        if K("att", qid) not in st.session_state:
-            st.session_state[K("att", qid)] = 0
-        st.session_state[K("att", qid)] = _clamp_int(ans.get(qid, st.session_state.get(K("att", qid), 0)), 0, 4)
-
-    # tempo (min/dia)
-    st.session_state[K("att", "np_time_min")] = _clamp_int(ans.get("np_time_min", st.session_state.get(K("att", "np_time_min"), 5)), 2, 15)
-
-    # --- Compat: questões antigas 0–4 (se existirem no banco) ---
+    # Questões 0–4 (mesmas keys do formulário)
     for q in QUESTIONS:
-        qid = q["id"]
-        st.session_state[K("att", qid)] = _clamp_int(ans.get(qid, st.session_state.get(K("att", qid), 0)), 0, 4)
+        key = K("q", q["id"])
+        if key in st.session_state:
+            st.session_state[key] = int(ans.get(key, st.session_state[key]))
+        else:
+            st.session_state[key] = int(ans.get(key, q.get("default", 2)))
 
     # --- Anamnese física (detalhes) ---
     def _as_list(v):
@@ -1188,13 +958,19 @@ def apply_intake_to_form(intake_row: Dict[str, Any]):
             return []
         return [v]
 
+    def _as_int(v, default=0):
+        try:
+            return int(float(v))
+        except Exception:
+            return default
+
     st.session_state[K("att", "phys_dor_local")] = ans.get("phys_dor_local", "") or ""
-    st.session_state[K("att", "phys_dor_score")] = _clamp_int(ans.get("phys_dor_score", st.session_state.get(K("att", "phys_dor_score"), 0)), 0, 10)
+    st.session_state[K("att", "phys_dor_score")] = _as_int(ans.get("phys_dor_score", 0), 0)
     st.session_state[K("att", "phys_dor_regioes")] = _as_list(ans.get("phys_dor_regioes"))
     st.session_state[K("att", "phys_hist")] = ans.get("phys_hist", "") or ""
     st.session_state[K("att", "phys_meds_txt")] = ans.get("phys_meds_txt", "") or ""
 
-    # contexto emocional + saúde
+    # Novos campos (contexto emocional + saúde)
     st.session_state[K("att", "phys_emocoes_lida")] = ans.get("phys_emocoes_lida", "Prefiro não responder") or "Prefiro não responder"
     st.session_state[K("att", "phys_emocoes_obs")] = ans.get("phys_emocoes_obs", "") or ""
 
@@ -1212,41 +988,18 @@ def apply_intake_to_form(intake_row: Dict[str, Any]):
     st.session_state[K("att", "phys_transt_alim")] = ans.get("phys_transt_alim", "Não") or "Não"
     st.session_state[K("att", "phys_transt_alim_desc")] = ans.get("phys_transt_alim_desc", "") or ""
 
-    # Flags
-    flags = intake_row.get("flags_json") or {}
-    if isinstance(flags, str):
-        try:
-            flags = json.loads(flags)
-        except Exception:
-            flags = {}
-    for f in FLAGS:
-        fid = f["id"]
-        st.session_state[K("att", fid)] = bool(flags.get(fid, st.session_state.get(K("att", fid), False)))
-
-
 def reset_att_form_state():
     """Evita 'vazar' estado de um paciente para outro."""
     st.session_state.pop("last_intake_id", None)
     st.session_state[K("att", "complaint")] = ""
     st.session_state[K("att", "notes")] = ""
-
-    # --- V3: mapa 0–10 ---
-    for s in V3_SYMPTOMS:
-        st.session_state[K("att", s["id"])] = 0
-
-    # --- V3: neuroplasticidade ---
-    for q in V3_NEURO:
-        st.session_state[K("att", q["id"])] = 0
-    st.session_state[K("att", "np_time_min")] = 5
-
-    # --- Anamnese física (detalhes) ---
+    # Anamnese física (detalhes)
     st.session_state[K("att", "phys_dor_local")] = ""
     st.session_state[K("att", "phys_dor_score")] = 0
     st.session_state[K("att", "phys_dor_regioes")] = []
     st.session_state[K("att", "phys_hist")] = ""
     st.session_state[K("att", "phys_meds_txt")] = ""
-
-    # contexto emocional + saúde
+    # Novos campos
     st.session_state[K("att", "phys_emocoes_lida")] = "Prefiro não responder"
     st.session_state[K("att", "phys_emocoes_obs")] = ""
     st.session_state[K("att", "phys_alergias")] = "Não"
@@ -1259,14 +1012,11 @@ def reset_att_form_state():
     st.session_state[K("att", "phys_transt_alim")] = "Não"
     st.session_state[K("att", "phys_transt_alim_desc")] = ""
 
-    # Compat: zera sliders antigos 0–4 (se algum trecho ainda ler)
+
     for q in QUESTIONS:
         st.session_state[K("att", q["id"])] = 0
-
-    # Flags
     for f in FLAGS:
         st.session_state[K("att", f["id"])] = False
-
 
 
 def get_frequencies_by_codes(codes: List[str]) -> List[Dict[str, Any]]:
@@ -2517,93 +2267,6 @@ with tabs[0]:
                     use_container_width=True,
                     hide_index=True,
                 )
-                # Controles de sessão (visualizar / nova / apagar / status)
-                sopts = []
-                for r in sess:
-                    n = r.get("session_n")
-                    dt = r.get("scheduled_date") or ""
-                    stt = r.get("status") or ""
-                    sopts.append(f"S{int(n):02d} • {dt} • {stt}")
-                sel_s = st.selectbox("Sessão (último plano)", sopts, key=K("sess", "sel_lastplan"))
-                srow = sess[sopts.index(sel_s)] if sel_s in sopts else None
-
-                if srow:
-                    with st.expander("📄 Detalhes da sessão selecionada", expanded=False):
-                        st.write("Sessão:", srow.get("session_n"))
-                        st.write("Data:", srow.get("scheduled_date"))
-                        st.write("Status:", srow.get("status"))
-                        scriptj = srow.get("script_json") or {}
-                        try:
-                            if isinstance(scriptj, str):
-                                scriptj = json.loads(scriptj)
-                        except Exception:
-                            scriptj = {}
-                        # Mostra um resumo útil (sem poluir)
-                        st.write("Foco:", (scriptj.get("focus") or scriptj.get("foco") or "—"))
-                        st.write("Protocolos:", ", ".join(scriptj.get("protocolos") or scriptj.get("selected_protocols") or []) if isinstance(scriptj.get("protocolos") or scriptj.get("selected_protocols"), list) else "—")
-                        if st.checkbox("Ver JSON completo", key=K("sess", "show_json")):
-                            st.json(scriptj)
-
-                    sbtn1, sbtn2, sbtn3, sbtn4 = st.columns(4)
-                    if sbtn1.button("✅ Marcar REALIZADA", use_container_width=True, key=K("sess", "mk_done")):
-                        try:
-                            update_session_nova(str(srow.get("id")), {"status": "REALIZADA"})
-                            st.success("Sessão atualizada.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao atualizar: {e}")
-
-                    if sbtn2.button("🗓️ Marcar AGENDADA", use_container_width=True, key=K("sess", "mk_sched")):
-                        try:
-                            update_session_nova(str(srow.get("id")), {"status": "AGENDADA"})
-                            st.success("Sessão atualizada.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao atualizar: {e}")
-
-                    if sbtn3.button("➕ Nova sessão (duplicar)", use_container_width=True, key=K("sess", "dup_new")):
-                        try:
-                            # próxima numeração
-                            max_n = max([int(rr.get("session_n") or 0) for rr in (sess or [])]) if sess else 0
-                            next_n = max_n + 1
-                            # data sugerida: última data + cadência do plano
-                            cad = int(p0.get("cadence_days") or 14)
-                            last_dt = None
-                            try:
-                                # tenta usar scheduled_date da última sessão
-                                last_row = sorted(sess, key=lambda x: int(x.get("session_n") or 0))[-1]
-                                if last_row.get("scheduled_date"):
-                                    last_dt = date.fromisoformat(str(last_row.get("scheduled_date")))
-                            except Exception:
-                                last_dt = None
-                            if last_dt is None:
-                                last_dt = date.today()
-                            new_dt = last_dt + timedelta(days=cad)
-
-                            scriptj = srow.get("script_json") or {}
-                            if isinstance(scriptj, str):
-                                try:
-                                    scriptj = json.loads(scriptj)
-                                except Exception:
-                                    scriptj = {}
-                            # atualiza campos básicos do script
-                            scriptj["session_n"] = next_n
-                            scriptj["scheduled_date"] = str(new_dt)
-                            scriptj["status"] = "AGENDADA"
-
-                            insert_session_nova(str(p0.get("id")), patient_id, int(next_n), str(new_dt), "AGENDADA", scriptj)
-                            st.success("Nova sessão criada (mantendo histórico).")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao criar nova sessão: {e}")
-
-                    if sbtn4.button("🗑️ Apagar sessão", use_container_width=True, key=K("sess", "del_one")):
-                        try:
-                            delete_session_nova(str(srow.get("id")))
-                            st.success("Sessão apagada.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao apagar: {e}")
             else:
                 st.caption("Sem sessões_nova para o último plano (ou tabela ainda não criada).")
 
@@ -2612,75 +2275,59 @@ with tabs[0]:
             complaint = st.text_input("Queixa principal (curta)", key=K("att", "complaint"))
         with col2:
             atend_date = st.date_input("Data", value=date.today(), key=K("att", "date"))
-        st.markdown("**Mapa rápido (0–10)**")
-        st.caption(SCALE_0_10_HELP)
 
-        # Tabs por área para não ficar bagunçado
-        t_corpo, t_mente, t_pert = st.tabs(["🧍 Corpo", "🧠 Mente", "🫂 Pertencimento"])
-        sym: Dict[str, int] = {}
+        st.markdown("**Anamnese (0–4)**")
+        st.caption(SCALE_0_4_HELP)
 
-        with t_corpo:
-            c1, c2 = st.columns(2)
-            with c1:
-                sym["sym_dor"] = st.slider("Dor no corpo (geral)", 0, 10, key=K("att", "sym_dor"), help=SCALE_0_10_HELP)
-                sym["sym_sono"] = st.slider("Sono ruim (insônia / acorda cansada)", 0, 10, key=K("att", "sym_sono"), help=SCALE_0_10_HELP)
-                sym["sym_sobrecarga"] = st.slider("Sobrecarga / responsabilidades", 0, 10, key=K("att", "sym_sobrecarga"), help=SCALE_0_10_HELP)
-            with c2:
-                sym["sym_rigidez"] = st.slider("Rigidez / travamento", 0, 10, key=K("att", "sym_rigidez"), help=SCALE_0_10_HELP)
-                sym["sym_fadiga"] = st.slider("Cansaço / fadiga", 0, 10, key=K("att", "sym_fadiga"), help=SCALE_0_10_HELP)
+        with st.expander("🧭 Resumo dos domínios (motivo de cada um)"):
+            df_dom = build_domains_summary_df()
+            st.dataframe(df_dom, use_container_width=True, hide_index=True)
+            st.caption("Use este resumo como referência rápida: quando o score estiver alto, priorize a direção terapêutica sugerida e combine com o contexto físico/alertas.")
 
-        with t_mente:
-            m1, m2 = st.columns(2)
-            with m1:
-                sym["sym_ansiedade"] = st.slider("Ansiedade / agitação", 0, 10, key=K("att", "sym_ansiedade"), help=SCALE_0_10_HELP)
-                sym["sym_irritabilidade"] = st.slider("Irritabilidade / impaciência", 0, 10, key=K("att", "sym_irritabilidade"), help=SCALE_0_10_HELP)
-            with m2:
-                sym["sym_ruminacao"] = st.slider("Pensamentos repetitivos / ruminação", 0, 10, key=K("att", "sym_ruminacao"), help=SCALE_0_10_HELP)
 
-        with t_pert:
-            p1, p2 = st.columns(2)
-            with p1:
-                sym["sym_falta_pertenc"] = st.slider("Falta de pertencimento / desconexão", 0, 10, key=K("att", "sym_falta_pertenc"), help=SCALE_0_10_HELP)
-                sym["sym_autocritica"] = st.slider("Autojulgamento / vergonha", 0, 10, key=K("att", "sym_autocritica"), help=SCALE_0_10_HELP)
-            with p2:
-                sym["sym_isolamento"] = st.slider("Isolamento / dificuldade de pedir ajuda", 0, 10, key=K("att", "sym_isolamento"), help=SCALE_0_10_HELP)
+        # Perguntas separadas por abas (por domínio) para facilitar visualização/foco
+        q_by_domain = {d: [q for q in QUESTIONS if q.get("domain") == d] for d in DOMAINS}
 
-        # Neuroplasticidade (entra no cálculo de sessões/cadência)
-        with st.expander("🧠 Neuroplasticidade (0–4) — entra no cálculo", expanded=True):
-            st.caption("0 = baixo / difícil agora · 4 = alto / fácil agora (exceto 'alerta', onde 4 = muito alerta).")
-            n1, n2 = st.columns(2)
-            neuro: Dict[str, int] = {}
-            with n1:
-                neuro["np_alerta"] = st.slider("Meu corpo/mente fica em alerta com facilidade", 0, 4, key=K("att", "np_alerta"))
-                neuro["np_pausa"] = st.slider("Consigo pausar 30–60s antes de reagir", 0, 4, key=K("att", "np_pausa"))
-            with n2:
-                neuro["np_recurso"] = st.slider("Tenho pelo menos 1 recurso que me acalma", 0, 4, key=K("att", "np_recurso"))
-                neuro["np_adesao"] = st.slider("Consigo praticar um exercício curto todos os dias", 0, 4, key=K("att", "np_adesao"))
+        tab_labels = [
+            _DOMAIN_LABEL.get("sono", "Sono"),
+            _DOMAIN_LABEL.get("ansiedade", "Ansiedade"),
+            _DOMAIN_LABEL.get("humor_baixo", "Humor baixo"),
+            _DOMAIN_LABEL.get("exaustao", "Exaustão"),
+            _DOMAIN_LABEL.get("pertencimento", "Pertencimento"),
+            _DOMAIN_LABEL.get("tensao", "Tensão"),
+            _DOMAIN_LABEL.get("ruminacao", "Ruminação"),
+        ]
+        tab_domains = ["sono", "ansiedade", "humor_baixo", "exaustao", "pertencimento", "tensao", "ruminacao"]
 
-            # tempo disponível (min/dia)
-            time_labels = [lab for _m, lab in V3_TIME_OPTIONS]
-            time_vals = [int(_m) for _m, _lab in V3_TIME_OPTIONS]
-            default_min = st.session_state.get(K("att", "np_time_min"), 5)
-            if default_min not in time_vals:
-                default_min = 5
-            idx_def = time_vals.index(default_min)
-            sel_lab = st.selectbox("Tempo disponível para prática (em casa)", time_labels, index=idx_def, key=K("att", "np_time_lab"))
-            time_min = time_vals[time_labels.index(sel_lab)]
-            st.session_state[K("att", "np_time_min")] = int(time_min)
+        an_tabs = st.tabs(tab_labels)
 
-            readiness_pct = compute_readiness_pct(neuro, time_min)
+        answers: Dict[str, int] = {}
+        for _tab, _dom in zip(an_tabs, tab_domains):
+            with _tab:
+                cols_q = st.columns(2)
+                qs = q_by_domain.get(_dom, [])
+                for i, q in enumerate(qs):
+                    with cols_q[i % 2]:
+                        kq = K("att", q["id"])
 
-            pillars = compute_core_pillars(sym)
+                        if kq in st.session_state:
 
-            k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("Dor/Fibro", f"{pillars['Dor/Fibro']:.0f}%")
-            k2.metric("Sistema nervoso", f"{pillars['Sistema nervoso']:.0f}%")
-            k3.metric("Burnout", f"{pillars['Burnout/Cansaço']:.0f}%")
-            k4.metric("Pertencimento", f"{pillars['Pertencimento']:.0f}%")
-            k5.metric("Prontidão", f"{readiness_pct:.0f}%")
+                            answers[q["id"]] = st.slider(q["label"], 0, 4, key=kq, help=SCALE_0_4_HELP)
+
+                        else:
+
+                            answers[q["id"]] = st.slider(q["label"], 0, 4, 0, key=kq, help=SCALE_0_4_HELP)
+
+        # Garantia (caso a lista de perguntas mude no futuro)
+        for q in QUESTIONS:
+            kq = K("att", q["id"])
+            if q["id"] not in answers:
+                try:
+                    answers[q["id"]] = int(st.session_state.get(kq, 0))
+                except Exception:
+                    answers[q["id"]] = 0
 
         st.markdown("**Sinais de atenção**")
-
         flags: Dict[str, bool] = {}
         fcols = st.columns(2)
         for i, f in enumerate(FLAGS):
@@ -2786,50 +2433,14 @@ with tabs[0]:
         notes = st.text_area("Notas do terapeuta (opcional)", height=100, key=K("att", "notes"))
 
         # Respostas para salvar no banco (inclui detalhes físicos em JSON)
-                # Respostas para salvar no banco (inclui mapa 0–10 + neuro + detalhes físicos)
-        answers_store = {}
-        # V3 symptoms (0–10)
-        for s in V3_SYMPTOMS:
-            sid = s["id"]
-            answers_store[sid] = int(st.session_state.get(K("att", sid), 0))
-        # V3 neuro (0–4) + tempo
-        for q in V3_NEURO:
-            qid = q["id"]
-            answers_store[qid] = int(st.session_state.get(K("att", qid), 0))
-        answers_store["np_time_min"] = int(st.session_state.get(K("att", "np_time_min"), 5))
-        # detalhes físicos
-        answers_store.update(phys_meta or {})# --- Cálculo V3 (todas as perguntas entram no cálculo) ---
-        # sym/neuro/readiness_pct/pillars são definidos acima (UI)
-        # fallback seguro (caso algum trecho rode sem UI)
-        try:
-            _sym = sym
-        except Exception:
-            _sym = {s["id"]: int(st.session_state.get(K("att", s["id"]), 0)) for s in V3_SYMPTOMS}
-        try:
-            _neuro = neuro
-        except Exception:
-            _neuro = {q["id"]: int(st.session_state.get(K("att", q["id"]), 0)) for q in V3_NEURO}
-        time_min = int(st.session_state.get(K("att", "np_time_min"), 5))
-        readiness_pct = compute_readiness_pct(_neuro, time_min)
+        answers_store = dict(answers)
+        answers_store.update(phys_meta or {})
 
-        scores_raw, pillars = compute_scores_v3(_sym)
-
-        # sincroniza dor (0–10) para a parte física, se ainda estiver zerada
-        try:
-            if int(st.session_state.get(K("att", "phys_dor_score"), 0)) == 0 and int(_sym.get("sym_dor", 0)) > 0:
-                st.session_state[K("att", "phys_dor_score")] = int(_sym.get("sym_dor", 0))
-        except Exception:
-            pass
-
+        scores_raw = compute_scores(answers)
         scores, ctx_phys = adjust_scores_with_phys(scores_raw, phys_meta)
         focus = pick_focus(scores, top_n=3)
-
         qty, cadence = sessions_from_scores(scores)
-        qty, cadence, neuro_notes = apply_neuro_to_sessions(qty, cadence, readiness_pct, int(_sym.get("sym_dor", 0)))
-        if neuro_notes:
-            ctx_phys = ctx_phys or {}
-            ctx_phys.setdefault("ajustes_neuro", [])
-            ctx_phys["ajustes_neuro"] = list(ctx_phys.get("ajustes_neuro") or []) + neuro_notes
+
         try:
             protocols = load_protocols()
         except Exception as e:
@@ -3233,9 +2844,6 @@ with tabs[0]:
                     "condutas_alerta": condutas_alerta,
 
                             "scores": scores,
-                            "pillars_v3": pillars,
-                            "readiness_pct": readiness_pct,
-                            "np_time_min": time_min,
                             "answers": answers_store,
                             "focus": focus,
                             "selected_protocols": selected_names,
