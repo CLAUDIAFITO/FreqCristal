@@ -1474,67 +1474,67 @@ def apply_intake_to_form(intake_row: Dict[str, Any]):
     st.session_state[K("att", "phys_transt_alim")] = ans.get("phys_transt_alim", "Não") or "Não"
     st.session_state[K("att", "phys_transt_alim_desc")] = ans.get("phys_transt_alim_desc", "") or ""
 
-# --- V4: 9 Origens (compat) ---
-METODOS_O9 = ["Aurímetro", "Pêndulo", "Entrevista", "Outro"]
-metodo = ans.get("o9_metodo") or ans.get("origens9_metodo") or "Aurímetro"
-if metodo not in METODOS_O9:
-    metodo = "Outro" if str(metodo).strip() else "Aurímetro"
-st.session_state[K("att", "o9_metodo")] = metodo
-
-# compat: pode vir como dict aninhado em ans["origens9"] ou como chaves planas
-o9 = ans.get("origens9") or ans.get("o9") or {}
-if isinstance(o9, str):
-    try:
-        o9 = json.loads(o9)
-    except Exception:
-        o9 = {}
-
-for o in ORIGENS9:
-    oid = o["id"]
-
-    # medição 0–10
-    mval = None
-    if isinstance(o9, dict) and isinstance(o9.get(oid), dict):
-        mval = o9.get(oid, {}).get("meas")
-    if mval is None:
-        mval = ans.get(f"o9_{oid}_meas")
-    st.session_state[K("att", f"o9_{oid}_meas")] = _clamp_int(mval or 0, 0, 10)
-
-    # nota
-    nval = None
-    if isinstance(o9, dict) and isinstance(o9.get(oid), dict):
-        nval = o9.get(oid, {}).get("note")
-    if nval is None:
-        nval = ans.get(f"o9_{oid}_note")
-    st.session_state[K("att", f"o9_{oid}_note")] = str(nval or "")
-
-    # evidências (checkbox)
-    ev_dict = {}
-    if isinstance(o9, dict) and isinstance(o9.get(oid), dict):
-        ev_dict = o9.get(oid, {}).get("evidence") or {}
-    for ev in (o.get("evidence") or []):
-        evid = ev.get("id")
-        if not evid:
-            continue
-        b = None
-        if isinstance(ev_dict, dict):
-            b = ev_dict.get(evid)
-        if b is None:
-            b = ans.get(f"o9_{oid}_ev_{evid}")
-        st.session_state[K("att", f"o9_{oid}_ev_{evid}")] = bool(b)
-
-    # Flags
-    flags = intake_row.get("flags_json") or {}
-    if isinstance(flags, str):
+    # --- V4: 9 Origens (compat) ---
+    METODOS_O9 = ["Aurímetro", "Pêndulo", "Entrevista", "Outro"]
+    metodo = ans.get("o9_metodo") or ans.get("origens9_metodo") or "Aurímetro"
+    if metodo not in METODOS_O9:
+        metodo = "Outro" if str(metodo).strip() else "Aurímetro"
+    st.session_state[K("att", "o9_metodo")] = metodo
+    
+    # compat: pode vir como dict aninhado em ans["origens9"] ou como chaves planas
+    o9 = ans.get("origens9") or ans.get("o9") or {}
+    if isinstance(o9, str):
         try:
-            flags = json.loads(flags)
+            o9 = json.loads(o9)
         except Exception:
-            flags = {}
-    for f in FLAGS:
-        fid = f["id"]
-        st.session_state[K("att", fid)] = bool(flags.get(fid, st.session_state.get(K("att", fid), False)))
-
-
+            o9 = {}
+    
+    for o in ORIGENS9:
+        oid = o["id"]
+    
+        # medição 0–10
+        mval = None
+        if isinstance(o9, dict) and isinstance(o9.get(oid), dict):
+            mval = o9.get(oid, {}).get("meas")
+        if mval is None:
+            mval = ans.get(f"o9_{oid}_meas")
+        st.session_state[K("att", f"o9_{oid}_meas")] = _clamp_int(mval or 0, 0, 10)
+    
+        # nota
+        nval = None
+        if isinstance(o9, dict) and isinstance(o9.get(oid), dict):
+            nval = o9.get(oid, {}).get("note")
+        if nval is None:
+            nval = ans.get(f"o9_{oid}_note")
+        st.session_state[K("att", f"o9_{oid}_note")] = str(nval or "")
+    
+        # evidências (checkbox)
+        ev_dict = {}
+        if isinstance(o9, dict) and isinstance(o9.get(oid), dict):
+            ev_dict = o9.get(oid, {}).get("evidence") or {}
+        for ev in (o.get("evidence") or []):
+            evid = ev.get("id")
+            if not evid:
+                continue
+            b = None
+            if isinstance(ev_dict, dict):
+                b = ev_dict.get(evid)
+            if b is None:
+                b = ans.get(f"o9_{oid}_ev_{evid}")
+            st.session_state[K("att", f"o9_{oid}_ev_{evid}")] = bool(b)
+    
+        # Flags
+        flags = intake_row.get("flags_json") or {}
+        if isinstance(flags, str):
+            try:
+                flags = json.loads(flags)
+            except Exception:
+                flags = {}
+        for f in FLAGS:
+            fid = f["id"]
+            st.session_state[K("att", fid)] = bool(flags.get(fid, st.session_state.get(K("att", fid), False)))
+    
+    
 def reset_att_form_state():
     """Evita 'vazar' estado de um paciente para outro."""
     st.session_state.pop("last_intake_id", None)
