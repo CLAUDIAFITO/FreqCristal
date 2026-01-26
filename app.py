@@ -2944,7 +2944,7 @@ with tabs[0]:
     measures, evidences, o9_notes = _get_o9_inputs()
 # Se nada for preenchido, o modelo fica "neutro" e tende a repetir o mesmo resultado.
 if (sum(int(v or 0) for v in (measures or {}).values()) == 0) and (not any(bool(b) for _oid in (evidences or {}).values() for b in (_oid or {}).values())):
-    st.info("Preencha as **medições (0–10)** e/ou marque **evidências** para o sistema identificar as causas com mais precisão.")
+    st.info("Preencha as **medições (0–10)** e/ou marque **evidências** para o sistema identificar as causas com mais precisão. “Para a queixa principal (X), hoje, qual é a relevância da origem [ORIGEM] como causa ativa neste momento, numa escala de 0 a 10?”")
     o9_res = compute_origens9(measures, evidences, sym)
     scores = compute_domain_scores_prof(o9_res, sym, neuro, phys_meta, flags)
     focus = pick_focus(scores, top_n=3)
