@@ -687,42 +687,125 @@ def compute_origens9(
 
     return {"raw": raw, "prob": prob, "confidence": conf, "hits": hits}
 
-def compute_domain_scores_prof(
-    orig_prob: Dict[str, float],
-    sym_0_10: Dict[str, int],
-    phys_meta: Dict[str, Any],
-) -> Dict[str, float]:
-    """Combina origens (prob) + sintomas (0–10) + físico (pouco) => scores 0–100 por DOMAINS."""
-    # 1) contribuição das origens (até 60)
-    dom_from_orig = {d: 0.0 for d in DOMAINS}
-    for oid, p in (orig_prob or {}).items():
-        wmap = ORIGEM_TO_DOMAIN_WEIGHTS.get(oid, {})
-        for dom, w in wmap.items():
-            if dom in dom_from_orig:
-                dom_from_orig[dom] += float(p) * float(w)
-    # normaliza por "máximo teórico" aproximado
-    for dom in dom_from_orig:
-        dom_from_orig[dom] = max(0.0, min(1.0, dom_from_orig[dom])) * 60.0
 
-    # 2) contribuição dos sintomas (até 40)
+def compute_domain_scores_prof(
+    o9_res: Dict[str, Any],
+    sym_0_10: Dict[str, int],
+    neuro_0_4: Dict[str, int],
+    phys_meta: Dict[str, Any],
+    flags: Optional[Dict[str, bool]] = None,
+) -> Dict[str, float]:
+    """Combina:
+    - 9 Origens: intensidade (score 0–100) ponderada pela confiança (0–1)
+    - sintomas rápidos (0–10)
+    - neuroplasticidade (0–4) e contexto físico/flags (ajustes leves)
+
+    Retorna scores 0–100 por DOMAINS (para seleção de protocolos), sem pretensão diagnóstica.
+    """
+    flags = flags or {}
+
+    orig_raw = o9_res.get("raw") if isinstance(o9_res, dict) else {}
+    orig_conf = o9_res.get("confidence") if isinstance(o9_res, dict) else {}
+    if not isinstance(orig_raw, dict):
+        orig_raw = {}
+    if not isinstance(orig_conf, dict):
+        orig_conf = {}
+
+    # 1) Origens => DOMAINS (até ~60)
+    eff: Dict[str, float] = {}
+    for oid in ORIGEM_TO_DOMAIN_WEIGHTS.keys():
+        r = float(orig_raw.get(oid, 0.0) or 0.0) / 100.0  # 0..1
+        c = float(orig_conf.get(oid, 0.0) or 0.0)        # 0..1
+        r = max(0.0, min(1.0, r))
+        c = max(0.0, min(1.0, c))
+        # confiança reduz (um pouco) o peso quando está baixa
+        eff[oid] = max(0.0, min(1.0, r * (0.65 + 0.35 * c)))
+
+    dom_from_orig = {d: 0.0 for d in DOMAINS}
+    dom_max = {d: 0.0 for d in DOMAINS}
+    for oid, wmap in ORIGEM_TO_DOMAIN_WEIGHTS.items():
+        e = float(eff.get(oid, 0.0))
+        for dom, w in (wmap or {}).items():
+            if dom in dom_from_orig:
+                ww = float(w or 0.0)
+                dom_from_orig[dom] += e * ww
+                dom_max[dom] += ww
+
+    for dom in dom_from_orig:
+        denom = dom_max.get(dom, 0.0) or 1.0
+        dom_from_orig[dom] = max(0.0, min(1.0, dom_from_orig[dom] / denom)) * 60.0
+
+    # 2) Sintomas => DOMAINS (até ~40)
     dom_from_sym = {d: 0.0 for d in DOMAINS}
+    sym_max = {d: 0.0 for d in DOMAINS}
+    for _sid, wmap in (SYM_TO_DOMAIN or {}).items():
+        for dom, w in (wmap or {}).items():
+            if dom in sym_max:
+                sym_max[dom] += float(w or 0.0)
+
     for sid, val in (sym_0_10 or {}).items():
         v = max(0.0, min(10.0, float(val or 0.0))) / 10.0
         for dom, w in (SYM_TO_DOMAIN.get(sid, {}) or {}).items():
             if dom in dom_from_sym:
-                dom_from_sym[dom] += v * float(w)
+                dom_from_sym[dom] += v * float(w or 0.0)
+
     for dom in dom_from_sym:
-        dom_from_sym[dom] = max(0.0, min(1.0, dom_from_sym[dom])) * 40.0
+        denom = sym_max.get(dom, 0.0) or 1.0
+        dom_from_sym[dom] = max(0.0, min(1.0, dom_from_sym[dom] / denom)) * 40.0
 
-    scores = {dom: max(0.0, min(100.0, dom_from_orig.get(dom, 0.0) + dom_from_sym.get(dom, 0.0))) for dom in DOMAINS}
+    scores = {dom: dom_from_orig.get(dom, 0.0) + dom_from_sym.get(dom, 0.0) for dom in DOMAINS}
 
-    # 3) ajuste físico leve (evita respostas iguais sem virar diagnóstico)
+    # 3) Ajustes neuro (variação mais "clínica", sem virar diagnóstico)
+    try:
+        alerta = max(0.0, min(1.0, float(neuro_0_4.get("np_alerta", 0) or 0) / 4.0))
+        pausa = max(0.0, min(1.0, float(neuro_0_4.get("np_pausa", 0) or 0) / 4.0))
+        recurso = max(0.0, min(1.0, float(neuro_0_4.get("np_recurso", 0) or 0) / 4.0))
+        adesao = max(0.0, min(1.0, float(neuro_0_4.get("np_adesao", 0) or 0) / 4.0))
+
+        if alerta >= 0.75:
+            scores["ansiedade"] += 8.0
+            scores["sono"] += 4.0
+            scores["tensao"] += 4.0
+        if pausa <= 0.25:
+            scores["ruminacao"] += 8.0
+            scores["ansiedade"] += 4.0
+        if recurso <= 0.25:
+            scores["exaustao"] += 4.0
+            scores["ansiedade"] += 3.0
+        if adesao <= 0.25:
+            scores["exaustao"] += 4.0
+            scores["ruminacao"] += 3.0
+    except Exception:
+        pass
+
+    # 4) Ajustes físicos/flags
     try:
         dor = float(phys_meta.get("phys_dor_score") or 0.0) / 10.0
         if dor > 0:
-            scores["tensao"] = max(scores["tensao"], min(100.0, scores["tensao"] + dor * 12.0))
+            scores["tensao"] = max(scores["tensao"], min(100.0, scores["tensao"] + dor * 14.0))
+            scores["sono"] = max(scores["sono"], min(100.0, scores["sono"] + dor * 6.0))
     except Exception:
         pass
+
+    confl = str(phys_meta.get("phys_conflito_nivel") or "").strip()
+    if confl in ("Moderado", "Grave"):
+        scores["pertencimento"] += 12.0
+        scores["ansiedade"] += 6.0
+        scores["ruminacao"] += 4.0
+
+    ta = str(phys_meta.get("phys_transt_alim") or "").strip()
+    if ta in ("Sim", "Suspeita/Em investigação"):
+        scores["ansiedade"] += 6.0
+        scores["humor_baixo"] += 6.0
+        scores["ruminacao"] += 3.0
+
+    if bool(flags.get("flag_sound")):
+        scores["ansiedade"] += 3.0
+    if bool(flags.get("flag_light")):
+        scores["tensao"] += 3.0
+
+    # 5) clamp final
+    scores = {dom: max(0.0, min(100.0, float(scores.get(dom, 0.0) or 0.0))) for dom in DOMAINS}
     return scores
 
 
@@ -889,15 +972,43 @@ def load_frequencies(tipo: Optional[str] = None) -> List[Dict[str, Any]]:
     return sb_select("frequencies", columns="code,nome,hz,tipo,chakra,cor,descricao", order=("code", True))
 
 
+
 def select_protocols(scores: Dict[str, float], protocols: Dict[str, Dict[str, Any]]) -> List[str]:
-    selected = [BASE_PROTOCOL] if BASE_PROTOCOL in protocols else []
-    for dom, sc in scores.items():
-        if sc >= 60:
+    """Seleciona protocolos de forma mais 'profissional':
+    - Base sempre (se existir)
+    - + até 3 protocolos foco, escolhidos por ranking (não só threshold fixo)
+    """
+    selected: List[str] = []
+    if BASE_PROTOCOL in protocols:
+        selected.append(BASE_PROTOCOL)
+
+    ranked = sorted(scores.items(), key=lambda x: float(x[1] or 0.0), reverse=True)
+    max_sc = float(ranked[0][1] or 0.0) if ranked else 0.0
+
+    for dom, sc in ranked:
+        pname = DOMAIN_TO_PROTOCOL.get(dom)
+        if not pname or pname not in protocols:
+            continue
+        if pname in selected:
+            continue
+        scf = float(sc or 0.0)
+        # entra se tiver força real OU estiver próximo do topo
+        if scf >= 45.0 or (max_sc > 0 and scf >= max_sc - 12.0):
+            selected.append(pname)
+        if len(selected) >= (1 if BASE_PROTOCOL in protocols else 0) + 3:
+            break
+
+    # garante pelo menos 1 foco além do BASE (quando houver biblioteca)
+    if BASE_PROTOCOL in protocols and len(selected) == 1:
+        for dom, _sc in ranked:
             pname = DOMAIN_TO_PROTOCOL.get(dom)
             if pname and pname in protocols and pname not in selected:
                 selected.append(pname)
-    if BASE_PROTOCOL in protocols and BASE_PROTOCOL not in selected:
-        selected.insert(0, BASE_PROTOCOL)
+                break
+
+    # base primeiro
+    if BASE_PROTOCOL in selected:
+        selected = [BASE_PROTOCOL] + [x for x in selected if x != BASE_PROTOCOL]
     return selected
 
 
@@ -1523,18 +1634,23 @@ def apply_intake_to_form(intake_row: Dict[str, Any]):
                 b = ans.get(f"o9_{oid}_ev_{evid}")
             st.session_state[K("att", f"o9_{oid}_ev_{evid}")] = bool(b)
     
-        # Flags
-        flags = intake_row.get("flags_json") or {}
-        if isinstance(flags, str):
-            try:
-                flags = json.loads(flags)
-            except Exception:
-                flags = {}
-        for f in FLAGS:
-            fid = f["id"]
-            st.session_state[K("att", fid)] = bool(flags.get(fid, st.session_state.get(K("att", fid), False)))
     
     
+
+    # Flags (compat)
+    flags = intake_row.get("flags_json") or {}
+    if isinstance(flags, str):
+        try:
+            flags = json.loads(flags)
+        except Exception:
+            flags = {}
+    if not isinstance(flags, dict):
+        flags = {}
+    for f in FLAGS:
+        fid = f["id"]
+        st.session_state[K("att", fid)] = bool(flags.get(fid, st.session_state.get(K("att", fid), False)))
+
+
 def reset_att_form_state():
     """Evita 'vazar' estado de um paciente para outro."""
     st.session_state.pop("last_intake_id", None)
@@ -1570,25 +1686,23 @@ def reset_att_form_state():
     st.session_state[K("att", "phys_transt_alim")] = "Não"
     st.session_state[K("att", "phys_transt_alim_desc")] = ""
 
-    # Compat: zera sliders antigos 0–4 (se algum trecho ainda ler)
-    for q in QUESTIONS:
-        st.session_state[K("att", q["id"])] = 0
+    # --- V4: 9 Origens (causas) ---
+    st.session_state[K("att", "o9_metodo")] = "Aurímetro"
+    for o in ORIGENS9:
+        oid = o["id"]
+        st.session_state[K("att", f"o9_{oid}_meas")] = 0
+        st.session_state[K("att", f"o9_{oid}_note")] = ""
+        for ev in (o.get("evidence") or []):
+            evid = ev.get("id")
+            if evid:
+                st.session_state[K("att", f"o9_{oid}_ev_{evid}")] = False
 
-
-# --- V4: 9 Origens ---
-st.session_state[K("att", "o9_metodo")] = "Aurímetro"
-for o in ORIGENS9:
-    oid = o["id"]
-    st.session_state[K("att", f"o9_{oid}_meas")] = 0
-    st.session_state[K("att", f"o9_{oid}_note")] = ""
-    for ev in (o.get("evidence") or []):
-        evid = ev.get("id")
-        if evid:
-            st.session_state[K("att", f"o9_{oid}_ev_{evid}")] = False
-    # Flags
     for f in FLAGS:
         st.session_state[K("att", f["id"])] = False
 
+    # Compat: zera sliders antigos 0–4 (se algum trecho ainda ler)
+    for q in QUESTIONS:
+        st.session_state[K("att", q["id"])] = 0
 
 
 def get_frequencies_by_codes(codes: List[str]) -> List[Dict[str, Any]]:
@@ -2765,6 +2879,8 @@ with tabs[0]:
             evid = ev.get("id")
             if evid:
                 st.session_state.setdefault(K("att", f"o9_{oid}_ev_{evid}"), False)
+    for f in FLAGS:
+        st.session_state.setdefault(K("att", f["id"]), False)
 
     # -------------------------
     # Leitura do estado (sem depender de qual aba está aberta)
@@ -2826,8 +2942,11 @@ with tabs[0]:
     flags = _get_flags()
 
     measures, evidences, o9_notes = _get_o9_inputs()
+# Se nada for preenchido, o modelo fica "neutro" e tende a repetir o mesmo resultado.
+if (sum(int(v or 0) for v in (measures or {}).values()) == 0) and (not any(bool(b) for _oid in (evidences or {}).values() for b in (_oid or {}).values())):
+    st.info("Preencha as **medições (0–10)** e/ou marque **evidências** para o sistema identificar as causas com mais precisão.")
     o9_res = compute_origens9(measures, evidences, sym)
-    scores = compute_domain_scores_prof(o9_res.get("prob", {}), sym, phys_meta)
+    scores = compute_domain_scores_prof(o9_res, sym, neuro, phys_meta, flags)
     focus = pick_focus(scores, top_n=3)
     qty, cadence = sessions_from_scores(scores)
     readiness_pct = compute_readiness_pct(neuro, time_min)
