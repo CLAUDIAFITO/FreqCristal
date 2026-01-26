@@ -3098,7 +3098,7 @@ if (sum(int(v or 0) for v in (measures or {}).values()) == 0) and (not any(bool(
         with mcol1:
             metodo = st.selectbox("Método da medição", ["Aurímetro", "Pêndulo", "Entrevista", "Outro"], key=K("att", "o9_metodo"))
         with mcol2:
-            st.caption("Dica: use a nota de cada origem para registrar **o porquê** da medição (ex.: leitura do aurímetro, frase-chave do paciente).")
+            st.caption("Dica: use a nota de cada origem para registrar **o porquê** da medição (ex.: leitura do aurímetro, frase-chave do paciente). “Entre as 9 origens, quais são as 3 prioridades terapêuticas para (X) hoje, em ordem?”")
 
         cols = st.columns(3)
         for i, o in enumerate(ORIGENS9):
