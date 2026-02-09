@@ -3069,6 +3069,10 @@ if isinstance(ai_override, dict) and ai_override.get("patient_id") == patient_id
     # B) Fluxo principal (4 abas)
     # -------------------------
     t1, t2, t3, t4 = st.tabs(["🧭 Causas (9 origens)", "📝 Anamnese & contexto", "🧾 Plano & sessões", "🖨️ Impressão"])
+    # Proteção contra refactors/indentação quebrada: se tabs não inicializarem, falhar com mensagem clara.
+    if any(v not in locals() for v in ("t1","t2","t3","t4")):
+        st.error("Erro interno: abas (t1..t4) não foram inicializadas. Verifique a criação das tabs no app.")
+        st.stop()
 
     with t1:
         col1, col2 = st.columns([2, 1])
