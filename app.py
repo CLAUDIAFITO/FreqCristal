@@ -2818,7 +2818,7 @@ with st.expander("Localizar ou cadastrar paciente", expanded=True):
             st.error("Não consegui carregar a lista de pacientes. Verifique a conexão com o banco.")
             pats = []
 
-        q = st.text_input("Buscar por nome", key=K("att2","patient_search"))
+        q = st.text_input("Buscar por nome", value="", key=K("att2","patient_search"))
         options = []
         opt_to_id = {}
         opt_to_name = {}
@@ -2847,9 +2847,9 @@ with st.expander("Localizar ou cadastrar paciente", expanded=True):
     else:
         c1, c2 = st.columns(2)
         with c1:
-            nome_novo = st.text_input("Nome*", key=K("att2","novo_nome"))
-            telefone_novo = st.text_input("Telefone", key=K("att2","novo_tel"))
-            email_novo = st.text_input("Email", key=K("att2","novo_email"))
+            nome_novo = st.text_input("Nome*", value="", key=K("att2","novo_nome"))
+            telefone_novo = st.text_input("Telefone", value="", key=K("att2","novo_tel"))
+            email_novo = st.text_input("Email", value="", key=K("att2","novo_email"))
         with c2:
             nasc_novo = st.date_input("Nascimento", value=None, key=K("att2","novo_nasc"))
             notas_novo = st.text_area("Notas", height=80, key=K("att2","novo_notas"))
@@ -2878,13 +2878,9 @@ if patient_id:
     # -------------------------
     colA, colB = st.columns([2,1])
     with colA:
-        if K("att2","patient_nome") not in st.session_state:
-            st.session_state[K("att2","patient_nome")] = (patient_nome_sel or "")
-        patient_nome = st.text_input("Nome do paciente", disabled=bool(patient_id), key=K("att2","patient_nome"))
+        patient_nome = st.text_input("Nome do paciente", value=(patient_nome_sel or ""), disabled=bool(patient_id), key=K("att2","patient_nome"))
         queixa = st.text_area("Queixa principal (em 1 frase)", height=80, key=K("att2","queixa"))
     with colB:
-        if K("att2","objetivo") not in st.session_state:
-            st.session_state[K("att2","objetivo")] = "Relaxamento / ansiedade"
         objetivo = st.selectbox(
             "Objetivo principal da sessão",
             [
@@ -2896,6 +2892,7 @@ if patient_id:
                 "Autoestima / emocional",
                 "Limpeza energética / proteção",
             ],
+            index=0,
             key=K("att2","objetivo"),
         )
 
@@ -3001,19 +2998,10 @@ if patient_id:
     # Usa a lista ORIGENS9 já existente no app (topo do arquivo)
     o9_options = [f"{o.get('label')} — {o.get('desc')}" for o in (ORIGENS9 or [])]
     o9_map = {o9_options[i]: (ORIGENS9[i].get("id"), ORIGENS9[i].get("label")) for i in range(len(o9_options))}
-
-    # --- init session_state (evita conflito entre default do widget e valores carregados do histórico) ---
-    def _ss_init(k, v):
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-    _ss_init(K("att2","origens_sel"), o9_options[:1] if o9_options else [])
-    for _k in ("dor", "ansiedade", "sono", "energia"):
-        _ss_init(K("att2", _k), 0)
-
     origens_sel = st.multiselect(
         "Escolha 1 a 3 origens",
         o9_options,
+        default=o9_options[:1] if o9_options else [],
         key=K("att2","origens_sel"),
     )
     if len(origens_sel) > 3:
@@ -3021,10 +3009,10 @@ if patient_id:
 
     st.markdown("### Intensidades (0 a 10)")
     c1, c2, c3, c4 = st.columns(4)
-    dor = c1.slider("Dor", 0, 10, key=K("att2","dor"))
-    ansiedade = c2.slider("Ansiedade", 0, 10, key=K("att2","ansiedade"))
-    sono = c3.slider("Sono ruim", 0, 10, key=K("att2","sono"))
-    energia = c4.slider("Cansaço", 0, 10, key=K("att2","energia"))
+    dor = c1.slider("Dor", 0, 10, 0, key=K("att2","dor"))
+    ansiedade = c2.slider("Ansiedade", 0, 10, 0, key=K("att2","ansiedade"))
+    sono = c3.slider("Sono ruim", 0, 10, 0, key=K("att2","sono"))
+    energia = c4.slider("Cansaço", 0, 10, 0, key=K("att2","energia"))
 
     # -------------------------
     # 2) Regras simples -> Plano
