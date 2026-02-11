@@ -133,8 +133,8 @@ def _openai_responses(prompt: str, system: str = "") -> str:
     payload = {
         "model": OPENAI_MODEL,
         "input": [
-            {"role": "system", "content": [{"type": "text", "text": system or "Você é um assistente que redige parecer terapêutico integrativo com cautela, sem diagnosticar e sem prometer cura."}]},
-            {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            {"role": "system", "content": [{"type": "input_text", "text": system or "Você é um assistente que redige parecer terapêutico integrativo com cautela, sem diagnosticar e sem prometer cura."}]},
+            {"role": "user", "content": [{"type": "input_text", "text": prompt}]},
         ],
         "max_output_tokens": 450,
     }
