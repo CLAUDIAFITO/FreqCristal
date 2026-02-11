@@ -46,93 +46,6 @@ if BACKEND == "none":
     st.error("Defina DATABASE_URL **OU** SUPABASE_URL + SUPABASE_KEY (preferencialmente SUPABASE_SERVICE_ROLE_KEY).")
     st.stop()
 
-
-# -----------------------------
-# IA (opcional) — Sugestões + redação do plano
-# -----------------------------
-OPENAI_API_KEY = _get_env_or_secret("OPENAI_API_KEY")
-OPENAI_MODEL = _get_env_or_secret("OPENAI_MODEL") or "gpt-4o-mini"
-
-def _safe_json_loads(text: str) -> Any:
-    try:
-        return json.loads(text)
-    except Exception:
-        return None
-
-def ai_suggest_plan_adjustments(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Retorna sugestões (para o terapeuta aprovar) e também um texto de plano 'bonito'.
-    - NÃO executa nada sozinho; é só recomendação.
-    - Requer OPENAI_API_KEY.
-    """
-    if not OPENAI_API_KEY:
-        raise RuntimeError("Defina OPENAI_API_KEY (em st.secrets ou variável de ambiente).")
-
-    import requests
-
-    system = (
-        "Você é um assistente clínico-escritor para terapias integrativas. "
-        "Não diagnostique. Não prometa cura. "
-        "Trabalhe SOMENTE com os dados recebidos. "
-        "Sua tarefa é: (1) sugerir ajustes no plano (protocolos/quantidade/cadência) com justificativa, "
-        "e (2) escrever um plano final claro e humano. "
-        "Se faltarem dados, diga 'não informado'. "
-        "Responda APENAS em JSON válido."
-    )
-
-    user = {
-        "tarefa": "Sugira ajustes (opcionais) e gere o texto do plano.",
-        "regras": {
-            "nao_inventar_protocolos": True,
-            "nao_indicar_medicacao": True,
-            "se_houver_alertas_respeitar": True,
-            "sempre_incluir_aviso_medico": True,
-        },
-        "entrada": payload,
-        "saida_json_exata": {
-            "suggestions": {
-                "add_protocols": ["..."],
-                "remove_protocols": ["..."],
-                "adjust_sessions_qty": {"from": 0, "to": 0, "why": "..."},
-                "adjust_cadence_days": {"from": 0, "to": 0, "why": "..."},
-                "notes_for_therapist": ["..."]
-            },
-            "plan_text": {
-                "resumo": "...",
-                "objetivos": ["...", "...", "..."],
-                "protocolo_sessao": ["..."],
-                "plano_casa_7_dias": ["..."],
-                "afirmacoes": ["..."],
-                "alertas": ["..."],
-                "reavaliacao": "...",
-                "aviso_medico": "..."
-            }
-        }
-    }
-
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-    body = {
-        "model": OPENAI_MODEL,
-        "temperature": 0.4,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
-        ],
-    }
-
-    r = requests.post(url, headers=headers, json=body, timeout=45)
-    if r.status_code >= 400:
-        raise RuntimeError(f"OpenAI API error {r.status_code}: {r.text[:400]}")
-
-    data = r.json()
-    content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content") or ""
-    out = _safe_json_loads(content.strip())
-    if not isinstance(out, dict):
-        raise RuntimeError("IA não retornou JSON válido.")
-    return out
-
-
-
 # -----------------------------
 # DB helpers
 # -----------------------------
@@ -2927,24 +2840,8 @@ with tabs[0]:
     except Exception as e:
         protocols = {}
         st.warning(f"Não consegui ler protocol_library: {e}")
-    
-selected_names = select_protocols(scores, protocols) if protocols else []
-plan = merge_plan(selected_names, protocols) if protocols else {"chakras_prioritarios": [], "emocoes_prioritarias": [], "cristais_sugeridos": [], "fito_sugerida": [], "alertas": []}
-
-# --- IA (opcional): aplica override aprovado pelo terapeuta (Opção 2)
-ai_override = st.session_state.get(K("att", "ai_override"))
-if isinstance(ai_override, dict) and ai_override.get("patient_id") == patient_id:
-    try:
-        if isinstance(ai_override.get("selected_names"), list) and ai_override["selected_names"]:
-            selected_names = [str(x) for x in ai_override["selected_names"] if str(x).strip()]
-        if ai_override.get("sessions_qty") is not None:
-            qty = int(ai_override.get("sessions_qty") or qty)
-        if ai_override.get("cadence_days") is not None:
-            cadence = int(ai_override.get("cadence_days") or cadence)
-    except Exception:
-        pass
-    # Recalcula o plano consolidado com os protocolos ajustados
-    plan = merge_plan(selected_names, protocols) if protocols else plan
+    selected_names = select_protocols(scores, protocols) if protocols else []
+    plan = merge_plan(selected_names, protocols) if protocols else {"chakras_prioritarios": [], "emocoes_prioritarias": [], "cristais_sugeridos": [], "fito_sugerida": [], "alertas": []}
 
     # Alertas (reaproveita sua lógica existente)
     plan.setdefault("alertas", [])
@@ -3307,100 +3204,6 @@ if isinstance(ai_override, dict) and ai_override.get("patient_id") == patient_id
         else:
             st.caption("Sem alertas relevantes (além do básico).")
 
-
-# -----------------------------
-# 🤖 Agente IA (opção 2): sugere e você aprova
-# -----------------------------
-with st.expander("🤖 Agente IA — Sugestões (você aprova antes de salvar)", expanded=False):
-    if not OPENAI_API_KEY:
-        st.info("Para usar o agente IA, defina **OPENAI_API_KEY** em `st.secrets` ou variável de ambiente.")
-    else:
-        c_ai1, c_ai2 = st.columns([1, 1])
-        with c_ai1:
-            if st.button("Gerar sugestões IA", use_container_width=True, key=K("att", "ai_gen")):
-                try:
-                    payload = {
-                        "patient_id": patient_id,
-                        "complaint": complaint,
-                        "scores": scores,
-                        "focus": focus,
-                        "sessions_qty": qty,
-                        "cadence_days": cadence,
-                        "selected_protocols": selected_names,
-                        "plan_summary": plan,
-                        "flags": flags,
-                        "phys_meta": phys_meta,
-                        "origens9_resultado": o9_res,
-                        "pillars_v3": pillars,
-                        "readiness_pct": readiness_pct,
-                    }
-                    st.session_state[K("att", "ai_result")] = ai_suggest_plan_adjustments(payload)
-                    st.success("Sugestões geradas. Revise abaixo e aplique se fizer sentido.")
-                except Exception as e:
-                    st.error(f"Erro ao gerar sugestões IA: {e}")
-
-        ai_res = st.session_state.get(K("att", "ai_result"))
-        if isinstance(ai_res, dict):
-            sug = ai_res.get("suggestions") or {}
-            plan_text = ai_res.get("plan_text") or {}
-
-            st.markdown("#### Sugestões (para você decidir)")
-            st.write(sug)
-
-            # Monta uma proposta de override
-            add_p = [p for p in (sug.get("add_protocols") or []) if p]
-            rem_p = [p for p in (sug.get("remove_protocols") or []) if p]
-            new_selected = [p for p in (selected_names or []) if p and p not in rem_p]
-            for p in add_p:
-                if p not in new_selected:
-                    new_selected.append(p)
-
-            qty_to = (sug.get("adjust_sessions_qty") or {}).get("to")
-            cad_to = (sug.get("adjust_cadence_days") or {}).get("to")
-
-            st.markdown("#### Aplicar (override)")
-            c1, c2, c3 = st.columns([2, 1, 1])
-            with c1:
-                sel_override = st.multiselect(
-                    "Protocolos após aplicar",
-                    options=sorted(list(dict.fromkeys((selected_names or []) + (add_p or [])))),
-                    default=new_selected,
-                    key=K("att", "ai_sel_override"),
-                )
-            with c2:
-                qty_override = st.number_input(
-                    "Qtd sessões (override)",
-                    min_value=1, max_value=12,
-                    value=int(qty_to) if isinstance(qty_to, (int, float)) and int(qty_to) > 0 else int(qty),
-                    step=1,
-                    key=K("att", "ai_qty_override"),
-                )
-            with c3:
-                cad_override = st.number_input(
-                    "Cadência (dias)",
-                    min_value=7, max_value=30,
-                    value=int(cad_to) if isinstance(cad_to, (int, float)) and int(cad_to) > 0 else int(cadence),
-                    step=1,
-                    key=K("att", "ai_cad_override"),
-                )
-
-            if st.button("Aplicar override agora", type="secondary", use_container_width=True, key=K("att", "ai_apply")):
-                st.session_state[K("att", "ai_override")] = {
-                    "patient_id": patient_id,
-                    "selected_names": list(sel_override or []),
-                    "sessions_qty": int(qty_override),
-                    "cadence_days": int(cad_override),
-                    "applied_from_ai": True,
-                }
-                st.success("Override aplicado. O resumo acima será recalculado nesta tela.")
-                st.rerun()
-
-            st.markdown("#### Texto sugerido (para seu receituário)")
-            if plan_text:
-                st.text_area("Plano (texto)", value=json.dumps(plan_text, ensure_ascii=False, indent=2), height=260)
-            else:
-                st.caption("A IA não retornou 'plan_text'.")
-
         st.divider()
         st.markdown("### Botões finais")
         b1, b2 = st.columns(2)
@@ -3478,8 +3281,6 @@ with st.expander("🤖 Agente IA — Sugestões (você aprova antes de salvar)",
                             "plan": plan,
                             "audio": audio_block,
                             "frequencias": [{"code": c} for c in extra_freq_codes],
-                            "ai_result": st.session_state.get(K("att", "ai_result")),
-                            "ai_override": st.session_state.get(K("att", "ai_override")),
                         },
                     )
                     for s in scripts:
