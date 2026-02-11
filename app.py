@@ -2863,6 +2863,119 @@ if patient_id:
             key=K("att2","objetivo"),
         )
 
+    # -------------------------
+    # 0b) Histórico do paciente (carregar atendimentos anteriores)
+    # -------------------------
+    if patient_id:
+        with st.expander("📚 Histórico do paciente", expanded=False):
+            try:
+                _plans_hist = list_plans(patient_id, limit=15)
+                _intakes_hist = list_intakes(patient_id, limit=30)
+            except Exception:
+                _plans_hist, _intakes_hist = [], []
+
+            if not _plans_hist:
+                st.info("Ainda não há atendimentos salvos para este paciente.")
+            else:
+                def _fmt_dt(v: Any) -> str:
+                    try:
+                        if isinstance(v, str):
+                            return v.replace("T", " ")[:16]
+                        return str(v)[:16]
+                    except Exception:
+                        return str(v)
+
+                def _to_origens_options(labels: List[str]) -> List[str]:
+                    """Converte lista de labels (ex.: 'Emocional') em opções completas 'Emocional — desc'."""
+                    out = []
+                    for lbl in (labels or []):
+                        if not isinstance(lbl, str):
+                            continue
+                        if "—" in lbl:
+                            out.append(lbl)
+                            continue
+                        for o in (ORIGENS9 or []):
+                            if (o.get("label") or "") == lbl:
+                                desc = o.get("desc") or ""
+                                out.append(f"{lbl} — {desc}".strip())
+                                break
+                    return out
+
+                plan_labels = []
+                label_to_plan = {}
+                for p in (_plans_hist or []):
+                    dt = _fmt_dt(p.get("created_at"))
+                    pj = p.get("plan_json") or {}
+                    if isinstance(pj, str):
+                        try:
+                            pj = json.loads(pj)
+                        except Exception:
+                            pj = {}
+                    pl = (pj.get("plan") or {}) if isinstance(pj, dict) else {}
+                    queixa_hist = (pl.get("queixa") or "") if isinstance(pl, dict) else ""
+                    label = f"{dt} • {queixa_hist or 'Atendimento'}"
+                    plan_labels.append(label)
+                    label_to_plan[label] = p
+
+                pick_plan = st.selectbox("Escolha um atendimento para carregar", plan_labels, key=K("att2","hist_pick"))
+                c_hist1, c_hist2 = st.columns([1, 1])
+
+                def _load_plan_record(rec: Dict[str, Any]):
+                    pj = rec.get("plan_json") or {}
+                    if isinstance(pj, str):
+                        try:
+                            pj = json.loads(pj)
+                        except Exception:
+                            pj = {}
+                    pl = (pj.get("plan") or {}) if isinstance(pj, dict) else {}
+                    if not isinstance(pl, dict):
+                        pl = {}
+
+                    # Parecer IA: preferir salvo no plan_json (novo), senão buscar nas notas do intake
+                    parecer_loaded = ""
+                    if isinstance(pj, dict):
+                        parecer_loaded = pj.get("ai_parecer") or ""
+                    if not parecer_loaded:
+                        for it in (_intakes_hist or []):
+                            notes = it.get("notes") or ""
+                            if "Parecer IA" in str(notes):
+                                try:
+                                    parecer_loaded = str(notes).split("Parecer IA:", 1)[1].strip()
+                                except Exception:
+                                    parecer_loaded = ""
+                                break
+
+                    st.session_state[K("att2","queixa")] = pl.get("queixa", "") or ""
+                    st.session_state[K("att2","objetivo")] = pl.get("objetivo", "") or ""
+
+                    ans = pl.get("answers") or {}
+                    if isinstance(ans, dict):
+                        for k in ["sono", "energia", "ansiedade", "dor"]:
+                            if k in ans:
+                                st.session_state[K("att2", k)] = ans.get(k)
+
+                        o_sel = pl.get("origens_sel") or ans.get("origens_sel")
+                        if isinstance(o_sel, list):
+                            st.session_state[K("att2","origens_sel")] = _to_origens_options(o_sel)
+
+                    st.session_state["att2_loaded_plan"] = pl
+                    if parecer_loaded:
+                        st.session_state[K("att2","ai_parecer")] = parecer_loaded
+
+                with c_hist1:
+                    if st.button("Carregar atendimento selecionado", key=K("att2","hist_load")):
+                        rec = label_to_plan.get(pick_plan) or {}
+                        _load_plan_record(rec)
+                        st.success("Atendimento carregado ✅")
+                        st.rerun()
+
+                with c_hist2:
+                    if st.button("Carregar o último atendimento", key=K("att2","hist_load_last")):
+                        rec = (_plans_hist or [None])[0] or {}
+                        _load_plan_record(rec)
+                        st.success("Último atendimento carregado ✅")
+                        st.rerun()
+
     st.markdown("### 9 Origens (selecione as que mais fazem sentido)")
     # Usa a lista ORIGENS9 já existente no app (topo do arquivo)
     o9_options = [f"{o.get('label')} — {o.get('desc')}" for o in (ORIGENS9 or [])]
@@ -3209,6 +3322,7 @@ else:
                 "type": "atendimento_novo",
                 "generated_at": str(date.today()),
                 "plan": plan,
+                "ai_parecer": _parecer or "",
             }
             _ = insert_plan(
                 patient_id=patient_id,
