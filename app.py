@@ -2681,12 +2681,90 @@ with tabs[0]:
     st.markdown("## Atendimento (Novo) • 9 Origens — Plano rápido")
     st.caption("Triagem simples com poucas perguntas. No fim, você recebe um plano integrado (binaural + solfeggio + chakras + pedras) para usar na sessão da cama.")
 
+
+# -------------------------
+# 0) Paciente (localizar / cadastrar)
+# -------------------------
+st.markdown("### 👤 Paciente")
+with st.expander("Localizar ou cadastrar paciente", expanded=True):
+    modo_paciente = st.radio(
+        "O que você quer fazer?",
+        ["Localizar paciente existente", "Cadastrar novo paciente"],
+        horizontal=True,
+        key=K("att2","modo_paciente"),
+    )
+
+    sel_patient_id = st.session_state.get(K("att2","patient_id"))
+    sel_patient_name = st.session_state.get(K("att2","patient_nome_sel"), "")
+
+    if modo_paciente == "Localizar paciente existente":
+        try:
+            pats = list_patients()
+        except Exception as e:
+            st.error("Não consegui carregar a lista de pacientes. Verifique a conexão com o banco.")
+            pats = []
+
+        q = st.text_input("Buscar por nome", value="", key=K("att2","patient_search"))
+        options = []
+        opt_to_id = {}
+        opt_to_name = {}
+        for p in (pats or []):
+            nome = (p.get("nome") or "").strip()
+            nasc = (p.get("nascimento") or "")
+            if q and q.lower() not in nome.lower():
+                continue
+            label = f"{nome}  •  {nasc}" if nasc else nome
+            if not label:
+                continue
+            options.append(label)
+            opt_to_id[label] = p.get("id")
+            opt_to_name[label] = nome
+
+        if options:
+            pick = st.selectbox("Selecione", options, key=K("att2","patient_pick"))
+            if st.button("Usar este paciente", key=K("att2","btn_use_patient")):
+                st.session_state[K("att2","patient_id")] = opt_to_id.get(pick)
+                st.session_state[K("att2","patient_nome_sel")] = opt_to_name.get(pick, "")
+                st.success("Paciente selecionado.")
+                st.rerun()
+        else:
+            st.info("Nenhum paciente encontrado com esse filtro.")
+
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            nome_novo = st.text_input("Nome*", value="", key=K("att2","novo_nome"))
+            telefone_novo = st.text_input("Telefone", value="", key=K("att2","novo_tel"))
+            email_novo = st.text_input("Email", value="", key=K("att2","novo_email"))
+        with c2:
+            nasc_novo = st.date_input("Nascimento", value=None, key=K("att2","novo_nasc"))
+            notas_novo = st.text_area("Notas", height=80, key=K("att2","novo_notas"))
+
+        if st.button("Cadastrar paciente", key=K("att2","btn_create_patient")):
+            if not (nome_novo or "").strip():
+                st.warning("Preencha o nome.")
+            else:
+                try:
+                    new_id = insert_patient(nome_novo.strip(), telefone_novo, email_novo, nasc_novo, notas_novo)
+                    st.session_state[K("att2","patient_id")] = new_id
+                    st.session_state[K("att2","patient_nome_sel")] = nome_novo.strip()
+                    st.success("Paciente cadastrado e selecionado.")
+                    st.rerun()
+                except Exception:
+                    st.error("Não consegui cadastrar o paciente. Verifique o banco e tente novamente.")
+
+patient_id = st.session_state.get(K("att2","patient_id"))
+patient_nome_sel = st.session_state.get(K("att2","patient_nome_sel"), "")
+if patient_id:
+    st.caption(f"Paciente selecionado: **{patient_nome_sel}**")
+
+
     # -------------------------
     # 1) Perguntas (curtas)
     # -------------------------
     colA, colB = st.columns([2,1])
     with colA:
-        patient_nome = st.text_input("Nome do paciente (opcional)", value="", key=K("att2","patient_nome"))
+        patient_nome = st.text_input("Nome do paciente", value=(patient_nome_sel or ""), disabled=bool(patient_id), key=K("att2","patient_nome"))
         queixa = st.text_area("Queixa principal (em 1 frase)", height=80, key=K("att2","queixa"))
     with colB:
         objetivo = st.selectbox(
@@ -2867,6 +2945,20 @@ with tabs[0]:
             "chakras": chakras_list,
             "freq_codes": freq_codes,
             "pedras": pedras,
+            "answers": {
+                "objetivo": objetivo,
+                "origens_sel": orig_labels,
+                "dor": int(dor),
+                "ansiedade": int(ansiedade),
+                "sono_ruim": int(sono),
+                "cansaco": int(energia),
+            },
+            "scores": {
+                "dor_pct": float(dor) * 10.0,
+                "ansiedade_pct": float(ansiedade) * 10.0,
+                "sono_ruim_pct": float(sono) * 10.0,
+                "cansaco_pct": float(energia) * 10.0,
+            },
         }
 
     plan = st.session_state.get("att2_plan")
@@ -2912,3 +3004,42 @@ with tabs[0]:
 - 4) **Solfeggio** (em baixo volume/ambiente) + **pedras** posicionadas (mesmo tempo)
 - 5) **Fechamento**: água + ancoragem (1–2 min)
 """)
+
+
+st.markdown("---")
+st.subheader("💾 Salvar no prontuário (opcional)")
+if not patient_id:
+    st.info("Para salvar, selecione ou cadastre um paciente lá no topo da aba.")
+else:
+    if st.button("Salvar este atendimento", key=K("att2","btn_save")):
+        try:
+            ans = plan.get("answers") or {}
+            sc = plan.get("scores") or {}
+            flags = {}
+            intake_id = insert_intake(
+                patient_id=patient_id,
+                complaint=plan.get("queixa","") or "",
+                answers={k: (int(v) if isinstance(v,(int,float)) else v) for k,v in ans.items()},
+                scores={k: float(v) for k,v in sc.items()},
+                flags=flags,
+                notes="Atendimento (Novo) — gerado automaticamente",
+            )
+            _plan_json = {
+                "type": "atendimento_novo",
+                "generated_at": str(date.today()),
+                "plan": plan,
+            }
+            _ = insert_plan(
+                patient_id=patient_id,
+                intake_id=intake_id,
+                focus=[("Atendimento novo", 1.0)],
+                selected_names=["ATENDIMENTO_NOVO"],
+                sessions_qty=1,
+                cadence_days=7,
+                plan_json=_plan_json,
+            )
+            st.success("Salvo com sucesso ✅")
+        except Exception:
+            st.error("Não consegui salvar no banco. Verifique a conexão/credenciais e tente novamente.")
+
+
