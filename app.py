@@ -31,6 +31,35 @@ except Exception:
     HAS_REPORTLAB = False
 
 
+
+# -----------------------------
+# Fitoterapia (sugestões seguras / educativas)
+# -----------------------------
+# Observação: sugestões gerais (bem-estar), não substituem orientação profissional.
+# Sempre revisar alergias, gestação/lactação e uso de medicamentos.
+FITO_MAP = {
+    "ACALMAR": {
+        "ervas": ["Passiflora", "Melissa", "Camomila"],
+        "preparo": "Chá: 1 colher (chá) do blend para 200 ml de água quente, 1–2x/dia (preferir fim da tarde/noite)."
+    },
+    "SONO": {
+        "ervas": ["Mulungu", "Passiflora", "Camomila"],
+        "preparo": "Chá: 1 colher (chá) para 200 ml, 30–60 min antes de dormir. Evitar se houver sonolência excessiva."
+    },
+    "DOR": {
+        "ervas": ["Cúrcuma", "Gengibre", "Unha-de-gato"],
+        "preparo": "Uso tradicional: infusão/decocção leve conforme a erva. Se usa anticoagulantes/anti-inflamatórios, alinhar com profissional."
+    },
+    "ENERGIA": {
+        "ervas": ["Alecrim", "Hortelã-pimenta", "Gengibre"],
+        "preparo": "Chá: 1 colher (chá) para 200 ml pela manhã. Evitar à noite se estiver com insônia."
+    },
+    "DIGESTAO": {
+        "ervas": ["Capim-limão", "Erva-doce", "Hortelã"],
+        "preparo": "Chá após refeições: 1 colher (chá) para 200 ml, 1–2x/dia."
+    },
+}
+
 # -----------------------------
 # Config
 # -----------------------------
@@ -2874,6 +2903,20 @@ if patient_id:
         # padrão
         return 10.0, 12*60, "Alpha 10 Hz (10–12 min) como base equilibradora."
 
+
+    def _pick_fitoterapia(obj: str, dor_v: int, ans_v: int, sono_v: int, ene_v: int) -> Dict[str, Any]:
+        # Sugestão simples baseada no objetivo/sintomas (educativa; revisar caso a caso)
+        key = "ACALMAR"
+        if "Sono" in obj or sono_v >= 7:
+            key = "SONO"
+        elif "Dor" in obj or dor_v >= 7:
+            key = "DOR"
+        elif "Energia" in obj or ene_v >= 7:
+            key = "ENERGIA"
+        elif "Foco" in obj:
+            key = "ENERGIA" if ene_v >= 6 else "ACALMAR"
+        return {"categoria": key, **FITO_MAP.get(key, {"ervas": [], "preparo": ""})}
+
     def _pick_chakras(obj: str, orig_ids: list[str], dor_v: int, ans_v: int, sono_v: int, ene_v: int):
         # 1-3 chakras prioritários (nomes)
         base = []
@@ -2988,6 +3031,8 @@ if patient_id:
         pedras=[p for p in pedras if not (p in seen or seen.add(p))]
         pedras = pedras[:6]
 
+        fitoterapia = _pick_fitoterapia(objetivo, dor, ansiedade, sono, energia)
+
         st.session_state["att2_plan"] = {
             "patient_nome": patient_nome.strip(),
             "queixa": queixa.strip(),
@@ -2997,6 +3042,7 @@ if patient_id:
             "chakras": chakras_list,
             "freq_codes": freq_codes,
             "pedras": pedras,
+            "fitoterapia": fitoterapia,
             "answers": {
                 "objetivo": objetivo,
                 "origens_sel": orig_labels,
@@ -3049,6 +3095,19 @@ if patient_id:
         st.markdown("### 💎 Pedras sugeridas (em conjunto na sessão)")
         st.write(", ".join(plan["pedras"]) if plan["pedras"] else "—")
 
+
+        st.markdown("### 🌿 Fitoterapia sugerida (opcional)")
+        fito = plan.get("fitoterapia") or {}
+        ervas = fito.get("ervas") or []
+        preparo = fito.get("preparo") or ""
+        if ervas:
+            st.write("**Ervas:** " + ", ".join(ervas))
+        else:
+            st.write("—")
+        if preparo:
+            st.caption(preparo)
+        st.caption("⚠️ Revisar alergias, gestação/lactação e uso de medicamentos. Não substitui acompanhamento médico.")
+
         st.markdown("### ✅ Roteiro rápido (10–20 min)")
         st.markdown("""- 1) **Intenção + respiração** (1–2 min)
 - 2) **Cama de cristal + cromoterapia** nos chakras prioritários (8–12 min)
@@ -3073,30 +3132,45 @@ if patient_id:
                         answers = plan.get("answers") or {}
                         scores = plan.get("scores") or {}
                         prompt = f"""
-Paciente: {patient_nome_sel or patient_nome or "Não informado"}
-Queixa principal: {plan.get("queixa","")}
+                        Você irá escrever um texto para o paciente (linguagem simples, acolhedora e objetiva), com base no apanhado de informações abaixo.
+                        
+                        REGRAS IMPORTANTES:
+                        - Não diagnosticar e não prometer cura.
+                        - Evitar termos absolutos ("vai curar", "garante", "certeza").
+                        - Incluir uma observação de segurança: não substitui acompanhamento médico; interromper/ajustar se houver desconforto.
+                        - Fitoterapia: tratar como sugestão opcional e lembrar de revisar alergias, gestação/lactação e uso de medicamentos.
+                        
+                        DADOS DO PACIENTE
+                        Nome: {patient_nome_sel or patient_nome or "Não informado"}
+                        Queixa principal: {plan.get("queixa","")}
+                        
+                        Respostas (0–10):
+                        {json.dumps(plan.get("answers") or {}, ensure_ascii=False, indent=2)}
+                        
+                        Indicadores (scores em %):
+                        {json.dumps(plan.get("scores") or {}, ensure_ascii=False, indent=2)}
+                        
+                        PLANO CALCULADO PELO SISTEMA (para a sessão na cama)
+                        - Objetivo: {plan.get("objetivo","")}
+                        - Origens (9): {", ".join(plan.get("origens", []) or [])}
+                        - Chakras prioritários: {", ".join(plan.get("chakras", []) or [])}
+                        - Códigos (Solfeggio/Chakras): {", ".join(plan.get("freq_codes", []) or [])}
+                        - Binaural: beat {plan.get("binaural", {}).get("beat_hz","")} Hz | duração {int((plan.get("binaural", {}).get("dur_s", 0) or 0)/60)} min
+                        - Pedras: {", ".join(plan.get("pedras", []) or [])}
+                        - Fitoterapia (opcional): {", ".join((plan.get("fitoterapia", {}) or {}).get("ervas", []) or [])}
+                          Preparo: {(plan.get("fitoterapia", {}) or {}).get("preparo","")}
+                        
+                        TAREFA
+                        Escreva o parecer em 5 blocos:
+                        1) **Explicação para você** (4–6 linhas)
+                        2) **Por que esse plano foi escolhido** (bullets curtos: binaural, códigos, chakras, pedras, fitoterapia)
+                        3) **Como usar na sessão** (3 passos simples)
+                        4) **Afirmações para o tratamento** (5 afirmações curtas)
+                        5) **Observação de segurança** (1–2 linhas)
+                        
+                        Tamanho total: 14–22 linhas.
+                        """
 
-Respostas (0–4):
-{json.dumps(answers, ensure_ascii=False, indent=2)}
-
-Resumo dos 3 pontos mais altos (scores):
-{json.dumps(scores, ensure_ascii=False, indent=2)}
-
-Plano sugerido:
-- Objetivo: {plan.get("objetivo","")}
-- Chakras prioritários: {", ".join(plan.get("chakras", []) or [])}
-- Solfeggio: {", ".join(plan.get("solfeggio", []) or [])}
-- Binaural: {plan.get("binaural", {}).get("label","")} | beat {plan.get("binaural", {}).get("beat_hz","")} Hz | {plan.get("binaural", {}).get("dur_min","")} min
-- Pedras: {", ".join(plan.get("pedras", []) or [])}
-
-Tarefa:
-Escreva um **parecer** curto e claro (10–14 linhas) explicando o raciocínio do plano:
-1) O que as respostas indicam (sem diagnosticar);
-2) Por que esses chakras/solfeggio/pedras ajudam naquele objetivo;
-3) Como o binaural contribui (em linguagem simples);
-4) Uma observação de segurança: "não substitui cuidado médico; ajuste se houver desconforto".
-Não prometa cura nem use linguagem absoluta.
-"""
                         parecer = _openai_responses(prompt)
                         st.session_state[key_parecer] = parecer
                     except Exception as e:
