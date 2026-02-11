@@ -16,6 +16,13 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+# --- Optional dependency: requests (OpenAI)
+try:
+    import requests  # type: ignore
+    HAS_REQUESTS = True
+except Exception:
+    HAS_REQUESTS = False
+
 # --- Optional dependency: reportlab (PDF)
 try:
     import reportlab  # type: ignore
@@ -42,6 +49,9 @@ SUPABASE_URL = _get_env_or_secret("SUPABASE_URL")
 SUPABASE_KEY = _get_env_or_secret("SUPABASE_SERVICE_ROLE_KEY") or _get_env_or_secret("SUPABASE_KEY")
 
 BACKEND = "postgres" if DATABASE_URL else ("supabase" if (SUPABASE_URL and SUPABASE_KEY) else "none")
+
+OPENAI_API_KEY = _get_env_or_secret("OPENAI_API_KEY")
+OPENAI_MODEL = _get_env_or_secret("OPENAI_MODEL") or "gpt-4o-mini"
 if BACKEND == "none":
     st.error("Defina DATABASE_URL **OU** SUPABASE_URL + SUPABASE_KEY (preferencialmente SUPABASE_SERVICE_ROLE_KEY).")
     st.stop()
@@ -101,6 +111,48 @@ else:
         data = res.data or []
         return data[0] if data else None
 
+
+
+# -----------------------------
+# OpenAI helper (parecer IA)
+# -----------------------------
+def _openai_responses(prompt: str, system: str = "") -> str:
+    """
+    Chama a API da OpenAI (Responses API) e retorna texto.
+    Requer OPENAI_API_KEY em secrets/env e a lib requests instalada.
+    """
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY não configurada em Secrets.")
+    if not HAS_REQUESTS:
+        raise RuntimeError("Dependência 'requests' não instalada.")
+    url = "https://api.openai.com/v1/responses"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": OPENAI_MODEL,
+        "input": [
+            {"role": "system", "content": [{"type": "text", "text": system or "Você é um assistente que redige parecer terapêutico integrativo com cautela, sem diagnosticar e sem prometer cura."}]},
+            {"role": "user", "content": [{"type": "text", "text": prompt}]},
+        ],
+        "max_output_tokens": 450,
+    }
+    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=45)
+    if r.status_code >= 400:
+        raise RuntimeError(f"OpenAI error {r.status_code}: {r.text[:400]}")
+    data = r.json()
+
+    # Extract text from Responses API
+    out_parts = []
+    for item in data.get("output", []) or []:
+        if item.get("type") != "message":
+            continue
+        for c in item.get("content", []) or []:
+            if c.get("type") == "output_text":
+                out_parts.append(c.get("text", ""))
+    text = "\n".join([p for p in out_parts if p]).strip()
+    return text or "(sem texto retornado)"
 
 # -----------------------------
 # Domain model (anamnese simples)
@@ -3005,6 +3057,57 @@ if patient_id:
 - 5) **Fechamento**: água + ancoragem (1–2 min)
 """)
 
+        # -------------------------
+        # Parecer IA (opcional)
+        # -------------------------
+        with st.expander("🤖 Parecer da IA (opcional) — explicação do porquê do plano", expanded=False):
+            st.caption("A IA gera um texto explicativo com base nas respostas e no plano calculado. Você revisa antes de usar.")
+            if not OPENAI_API_KEY:
+                st.info("Para usar, configure **OPENAI_API_KEY** em Settings → Secrets (Streamlit Cloud).")
+            elif not HAS_REQUESTS:
+                st.info("Para usar, instale a dependência **requests** (adicione `requests` no requirements.txt).")
+            else:
+                key_parecer = K("att2","ai_parecer")
+                if st.button("Gerar parecer IA", key=K("att2","btn_ai_parecer")):
+                    try:
+                        answers = plan.get("answers") or {}
+                        scores = plan.get("scores") or {}
+                        prompt = f"""
+Paciente: {patient_nome_sel or patient_nome or "Não informado"}
+Queixa principal: {plan.get("queixa","")}
+
+Respostas (0–4):
+{json.dumps(answers, ensure_ascii=False, indent=2)}
+
+Resumo dos 3 pontos mais altos (scores):
+{json.dumps(scores, ensure_ascii=False, indent=2)}
+
+Plano sugerido:
+- Objetivo: {plan.get("objetivo","")}
+- Chakras prioritários: {", ".join(plan.get("chakras", []) or [])}
+- Solfeggio: {", ".join(plan.get("solfeggio", []) or [])}
+- Binaural: {plan.get("binaural", {}).get("label","")} | beat {plan.get("binaural", {}).get("beat_hz","")} Hz | {plan.get("binaural", {}).get("dur_min","")} min
+- Pedras: {", ".join(plan.get("pedras", []) or [])}
+
+Tarefa:
+Escreva um **parecer** curto e claro (10–14 linhas) explicando o raciocínio do plano:
+1) O que as respostas indicam (sem diagnosticar);
+2) Por que esses chakras/solfeggio/pedras ajudam naquele objetivo;
+3) Como o binaural contribui (em linguagem simples);
+4) Uma observação de segurança: "não substitui cuidado médico; ajuste se houver desconforto".
+Não prometa cura nem use linguagem absoluta.
+"""
+                        parecer = _openai_responses(prompt)
+                        st.session_state[key_parecer] = parecer
+                    except Exception as e:
+                        st.error(f"Não consegui gerar o parecer IA: {e}")
+
+                parecer_txt = st.session_state.get(key_parecer, "")
+                if parecer_txt:
+                    st.markdown("**Parecer gerado:**")
+                    st.write(parecer_txt)
+                    st.caption("Você pode copiar/editar esse texto antes de enviar ao paciente.")
+
 
 st.markdown("---")
 st.subheader("💾 Salvar no prontuário (opcional)")
@@ -3016,13 +3119,17 @@ else:
             ans = plan.get("answers") or {}
             sc = plan.get("scores") or {}
             flags = {}
+            _parecer = st.session_state.get(K("att2","ai_parecer"), "")
+            _notes = "Atendimento (Novo) — gerado automaticamente"
+            if _parecer:
+                _notes += "\n\nParecer IA:\n" + str(_parecer)
             intake_id = insert_intake(
                 patient_id=patient_id,
                 complaint=plan.get("queixa","") or "",
                 answers={k: (int(v) if isinstance(v,(int,float)) else v) for k,v in ans.items()},
                 scores={k: float(v) for k,v in sc.items()},
                 flags=flags,
-                notes="Atendimento (Novo) — gerado automaticamente",
+                notes=_notes,
             )
             _plan_json = {
                 "type": "atendimento_novo",
