@@ -1263,6 +1263,158 @@ document.getElementById('bstop').onclick  = stop;
 # -------------------------
 # CRUD: patients/intakes/plans/sessions_nova
 # -------------------------
+def webaudio_sequence_html(
+    sol_hz: List[float],
+    chakra_hz: List[float],
+    fc: float,
+    beat: float,
+    sol_seconds: int = 20,
+    binaural_seconds: int = 60,
+    chakra_seconds: int = 15,
+    tone_gain: float = 0.18,
+):
+    """Player: Sequência guiada (Solfeggio → Binaural → Chakras) em senoides via WebAudio."""
+    sol_hz = [float(x) for x in (sol_hz or []) if x]
+    chakra_hz = [float(x) for x in (chakra_hz or []) if x]
+    sol_seconds = int(max(5, sol_seconds))
+    binaural_seconds = int(max(5, binaural_seconds))
+    chakra_seconds = int(max(5, chakra_seconds))
+
+    bt = abs(float(beat))
+    fl = max(20.0, float(fc) - bt / 2)
+    fr = float(fc) + bt / 2
+
+    uid_src = json.dumps(
+        {"sol": sol_hz, "chak": chakra_hz, "fl": round(fl, 4), "fr": round(fr, 4), "ss": sol_seconds, "bs": binaural_seconds, "cs": chakra_seconds},
+        sort_keys=True,
+    )
+    uid = "seq_" + hashlib.sha1(uid_src.encode("utf-8")).hexdigest()[:10]
+
+    steps: List[Dict[str, Any]] = []
+    for hz in sol_hz:
+        steps.append({"type": "tone", "freq": float(hz), "sec": sol_seconds, "label": f"Solfeggio {hz:.2f} Hz"})
+    steps.append({"type": "binaural", "fl": float(fl), "fr": float(fr), "sec": binaural_seconds, "label": f"Binaural L {fl:.2f} • R {fr:.2f}"})
+    for hz in chakra_hz:
+        steps.append({"type": "tone", "freq": float(hz), "sec": chakra_seconds, "label": f"Chakra {hz:.2f} Hz"})
+
+    steps_js = json.dumps(steps)
+    g = float(max(0.02, min(0.7, tone_gain)))
+
+    return f"""
+<div style="padding:.6rem;border:1px solid #eee;border-radius:10px;">
+  <b>Sequência guiada</b> — Solfeggio → Binaural → Chakras<br/>
+  <button id="{uid}_play">▶️ Tocar sequência</button>
+  <button id="{uid}_stop">⏹️ Parar</button>
+  <span id="{uid}_status" style="margin-left:10px;color:#666;font-size:.9rem"></span>
+  <div style="margin-top:.4rem;font-size:.85rem;color:#666">
+    Observação: tons <b>senoidais</b> (puros). Recomendo fones, volume baixo a moderado.
+  </div>
+  <div id="{uid}_list" style="margin-top:.4rem;font-size:.85rem;color:#444"></div>
+</div>
+
+<script>
+const STEPS_{uid} = {steps_js};
+document.getElementById("{uid}_list").innerHTML = "<ol style='margin:.2rem 0 .2rem 1.1rem'>" +
+  STEPS_{uid}.map(s => `<li>${s.label} — ${s.sec}s</li>`).join("") + "</ol>";
+
+let ctx_{uid}=null;
+let active_{uid}=[];
+let timer_{uid}=null;
+
+function stopAll_{uid}(){
+  try { if(timer_{uid}) clearTimeout(timer_{uid}); } catch(e){}
+  try {
+    active_{uid}.forEach(o => {
+      try { o.stop(); } catch(e){}
+      try { o.disconnect(); } catch(e){}
+    });
+  } catch(e){}
+  active_{uid}=[];
+  if(ctx_{uid}) { try { ctx_{uid}.close(); } catch(e){} ctx_{uid}=null; }
+  const st = document.getElementById("{uid}_status");
+  if(st) st.textContent = "";
+}
+
+function fadeGain(gainNode, t0, t1) {
+  const fade = 0.06;
+  try {
+    gainNode.gain.setValueAtTime(0.0001, t0);
+    gainNode.gain.linearRampToValueAtTime(%(g)s, Math.min(t0+fade, t1-0.02));
+    gainNode.gain.setValueAtTime(%(g)s, Math.max(t0+fade, t1-0.02));
+    gainNode.gain.linearRampToValueAtTime(0.0001, t1);
+  } catch(e){}
+}
+
+async function play_{uid}(){
+  if(ctx_{uid}) return;
+  if(!STEPS_{uid} || STEPS_{uid}.length===0) {
+    const st = document.getElementById("{uid}_status");
+    if(st) st.textContent = "Selecione ao menos 1 Solfeggio/Chakra.";
+    return;
+  }
+  ctx_{uid} = new (window.AudioContext || window.webkitAudioContext)();
+  const now = ctx_{uid}.currentTime + 0.05;
+  let t = now;
+
+  const st = document.getElementById("{uid}_status");
+  const totalSec = STEPS_{uid}.reduce((a,s)=>a+Number(s.sec||0),0);
+  if(st) st.textContent = `Tocando… (~${Math.round(totalSec/60)} min)`;
+
+  for(const step of STEPS_{uid}) {
+    const sec = Math.max(1, Number(step.sec||0));
+    const t0 = t;
+    const t1 = t + sec;
+
+    if(step.type==="tone") {
+      const osc = ctx_{uid}.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = Number(step.freq||440);
+
+      const gnode = ctx_{uid}.createGain();
+      fadeGain(gnode, t0, t1);
+
+      osc.connect(gnode);
+      gnode.connect(ctx_{uid}.destination);
+
+      try { osc.start(t0); osc.stop(t1); } catch(e){}
+      active_{uid}.push(osc);
+    }
+
+    if(step.type==="binaural") {
+      const oL = ctx_{uid}.createOscillator();
+      const oR = ctx_{uid}.createOscillator();
+      oL.type="sine"; oR.type="sine";
+      oL.frequency.value = Number(step.fl||220);
+      oR.frequency.value = Number(step.fr||224);
+
+      const gL = ctx_{uid}.createGain();
+      const gR = ctx_{uid}.createGain();
+      fadeGain(gL, t0, t1);
+      fadeGain(gR, t0, t1);
+
+      const merger = ctx_{uid}.createChannelMerger(2);
+      oL.connect(gL); gL.connect(merger, 0, 0);
+      oR.connect(gR); gR.connect(merger, 0, 1);
+      merger.connect(ctx_{uid}.destination);
+
+      try { oL.start(t0); oR.start(t0); oL.stop(t1); oR.stop(t1); } catch(e){}
+      active_{uid}.push(oL); active_{uid}.push(oR);
+    }
+
+    t = t1 + 0.02;
+  }
+
+  const endMs = Math.ceil((t - now + 0.1)*1000);
+  timer_{uid} = setTimeout(()=>{ stopAll_{uid}(); }, endMs);
+}
+
+document.getElementById("{uid}_play").onclick = play_{uid};
+document.getElementById("{uid}_stop").onclick = stopAll_{uid};
+</script>
+""" % {"g": g}
+
+
+
 def list_patients():
     if BACKEND == "postgres":
         return qall("select id, nome, nascimento from public.patients order by nome asc")
@@ -2732,6 +2884,55 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
     seen = set()
     extra_codes = [c for c in extra_codes if not (c in seen or seen.add(c))]
     st.session_state["extra_freq_codes"] = extra_codes
+
+    # ▶️ Sequência guiada (Solfeggio → Binaural → Chakras)
+    st.markdown("▶️ Sequência guiada (Solfeggio → Binaural → Chakras)")
+    sol_sec = st.slider("Duração por Solfeggio (s)", 5, 60, 20, key=K("binaural", "sol_sec"))
+    chak_sec = st.slider("Duração por Chakra (s)", 5, 60, 15, key=K("binaural", "chak_sec"))
+
+    # resolver Hz escolhidos
+    code2hz = {}
+    for r in (sol or []) + (chak or []):
+        c = str(r.get("code") or "").strip().upper()
+        hz = r.get("hz")
+        if c and hz is not None:
+            code2hz[c] = float(hz)
+
+    sel_sol_hz = []
+    for x in sel_sol:
+        c = (sol_map.get(x) or "").strip().upper()
+        if c and c in code2hz:
+            sel_sol_hz.append(code2hz[c])
+
+    sel_chak_hz = []
+    for x in sel_chak:
+        c = (chak_map.get(x) or "").strip().upper()
+        if c and c in code2hz:
+            sel_chak_hz.append(code2hz[c])
+
+    # se o "custom code" for um número (Hz), adiciona ao final como tom mono
+    if custom_code.strip():
+        try:
+            hz_custom = float(custom_code.strip().replace(",", "."))
+            # decide se entra como solfeggio ou chakra? coloca em chakras por padrão
+            sel_chak_hz.append(hz_custom)
+        except Exception:
+            pass
+
+    components.html(
+        webaudio_sequence_html(
+            sol_hz=sel_sol_hz,
+            chakra_hz=sel_chak_hz,
+            fc=float(carrier),
+            beat=float(beat),
+            sol_seconds=int(sol_sec),
+            binaural_seconds=int(dur_s),
+            chakra_seconds=int(chak_sec),
+            tone_gain=float(tone_gain),
+        ),
+        height=220,
+    )
+
 
     # WAV de preview/download (20s): usa um ganho proporcional ao "Volume do binaural"
     wav_amp = min(0.95, max(0.05, float(tone_gain) * 4.0))
