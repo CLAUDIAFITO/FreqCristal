@@ -1263,6 +1263,158 @@ document.getElementById('bstop').onclick  = stop;
 # -------------------------
 # CRUD: patients/intakes/plans/sessions_nova
 # -------------------------
+def webaudio_sequence_html(
+    sol_hz: List[float],
+    chakra_hz: List[float],
+    fc: float,
+    beat: float,
+    sol_seconds: int = 20,
+    binaural_seconds: int = 60,
+    chakra_seconds: int = 15,
+    tone_gain: float = 0.18,
+):
+    """Player: Sequência guiada (Solfeggio → Binaural → Chakras) em senoides via WebAudio."""
+    sol_hz = [float(x) for x in (sol_hz or []) if x]
+    chakra_hz = [float(x) for x in (chakra_hz or []) if x]
+    sol_seconds = int(max(5, sol_seconds))
+    binaural_seconds = int(max(5, binaural_seconds))
+    chakra_seconds = int(max(5, chakra_seconds))
+
+    bt = abs(float(beat))
+    fl = max(20.0, float(fc) - bt / 2)
+    fr = float(fc) + bt / 2
+
+    uid_src = json.dumps(
+        {"sol": sol_hz, "chak": chakra_hz, "fl": round(fl, 4), "fr": round(fr, 4), "ss": sol_seconds, "bs": binaural_seconds, "cs": chakra_seconds},
+        sort_keys=True,
+    )
+    uid = "seq_" + hashlib.sha1(uid_src.encode("utf-8")).hexdigest()[:10]
+
+    steps: List[Dict[str, Any]] = []
+    for hz in sol_hz:
+        steps.append({"type": "tone", "freq": float(hz), "sec": sol_seconds, "label": f"Solfeggio {hz:.2f} Hz"})
+    steps.append({"type": "binaural", "fl": float(fl), "fr": float(fr), "sec": binaural_seconds, "label": f"Binaural L {fl:.2f} • R {fr:.2f}"})
+    for hz in chakra_hz:
+        steps.append({"type": "tone", "freq": float(hz), "sec": chakra_seconds, "label": f"Chakra {hz:.2f} Hz"})
+
+    steps_js = json.dumps(steps)
+    g = float(max(0.02, min(0.7, tone_gain)))
+
+    return f"""
+<div style="padding:.6rem;border:1px solid #eee;border-radius:10px;">
+  <b>Sequência guiada</b> — Solfeggio → Binaural → Chakras<br/>
+  <button id="{uid}_play">▶️ Tocar sequência</button>
+  <button id="{uid}_stop">⏹️ Parar</button>
+  <span id="{uid}_status" style="margin-left:10px;color:#666;font-size:.9rem"></span>
+  <div style="margin-top:.4rem;font-size:.85rem;color:#666">
+    Observação: tons <b>senoidais</b> (puros). Recomendo fones, volume baixo a moderado.
+  </div>
+  <div id="{uid}_list" style="margin-top:.4rem;font-size:.85rem;color:#444"></div>
+</div>
+
+<script>
+const STEPS_{uid} = {steps_js};
+document.getElementById("{uid}_list").innerHTML = "<ol style='margin:.2rem 0 .2rem 1.1rem'>" +
+  STEPS_{uid}.map(s => `<li>${s.label} — ${s.sec}s</li>`).join("") + "</ol>";
+
+let ctx_{uid}=null;
+let active_{uid}=[];
+let timer_{uid}=null;
+
+function stopAll_{uid}(){
+  try { if(timer_{uid}) clearTimeout(timer_{uid}); } catch(e){}
+  try {
+    active_{uid}.forEach(o => {
+      try { o.stop(); } catch(e){}
+      try { o.disconnect(); } catch(e){}
+    });
+  } catch(e){}
+  active_{uid}=[];
+  if(ctx_{uid}) { try { ctx_{uid}.close(); } catch(e){} ctx_{uid}=null; }
+  const st = document.getElementById("{uid}_status");
+  if(st) st.textContent = "";
+}
+
+function fadeGain(gainNode, t0, t1) {
+  const fade = 0.06;
+  try {
+    gainNode.gain.setValueAtTime(0.0001, t0);
+    gainNode.gain.linearRampToValueAtTime(%(g)s, Math.min(t0+fade, t1-0.02));
+    gainNode.gain.setValueAtTime(%(g)s, Math.max(t0+fade, t1-0.02));
+    gainNode.gain.linearRampToValueAtTime(0.0001, t1);
+  } catch(e){}
+}
+
+async function play_{uid}(){
+  if(ctx_{uid}) return;
+  if(!STEPS_{uid} || STEPS_{uid}.length===0) {
+    const st = document.getElementById("{uid}_status");
+    if(st) st.textContent = "Selecione ao menos 1 Solfeggio/Chakra.";
+    return;
+  }
+  ctx_{uid} = new (window.AudioContext || window.webkitAudioContext)();
+  const now = ctx_{uid}.currentTime + 0.05;
+  let t = now;
+
+  const st = document.getElementById("{uid}_status");
+  const totalSec = STEPS_{uid}.reduce((a,s)=>a+Number(s.sec||0),0);
+  if(st) st.textContent = `Tocando… (~${Math.round(totalSec/60)} min)`;
+
+  for(const step of STEPS_{uid}) {
+    const sec = Math.max(1, Number(step.sec||0));
+    const t0 = t;
+    const t1 = t + sec;
+
+    if(step.type==="tone") {
+      const osc = ctx_{uid}.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = Number(step.freq||440);
+
+      const gnode = ctx_{uid}.createGain();
+      fadeGain(gnode, t0, t1);
+
+      osc.connect(gnode);
+      gnode.connect(ctx_{uid}.destination);
+
+      try { osc.start(t0); osc.stop(t1); } catch(e){}
+      active_{uid}.push(osc);
+    }
+
+    if(step.type==="binaural") {
+      const oL = ctx_{uid}.createOscillator();
+      const oR = ctx_{uid}.createOscillator();
+      oL.type="sine"; oR.type="sine";
+      oL.frequency.value = Number(step.fl||220);
+      oR.frequency.value = Number(step.fr||224);
+
+      const gL = ctx_{uid}.createGain();
+      const gR = ctx_{uid}.createGain();
+      fadeGain(gL, t0, t1);
+      fadeGain(gR, t0, t1);
+
+      const merger = ctx_{uid}.createChannelMerger(2);
+      oL.connect(gL); gL.connect(merger, 0, 0);
+      oR.connect(gR); gR.connect(merger, 0, 1);
+      merger.connect(ctx_{uid}.destination);
+
+      try { oL.start(t0); oR.start(t0); oL.stop(t1); oR.stop(t1); } catch(e){}
+      active_{uid}.push(oL); active_{uid}.push(oR);
+    }
+
+    t = t1 + 0.02;
+  }
+
+  const endMs = Math.ceil((t - now + 0.1)*1000);
+  timer_{uid} = setTimeout(()=>{ stopAll_{uid}(); }, endMs);
+}
+
+document.getElementById("{uid}_play").onclick = play_{uid};
+document.getElementById("{uid}_stop").onclick = stopAll_{uid};
+</script>
+""" % {"g": g}
+
+
+
 def list_patients():
     if BACKEND == "postgres":
         return qall("select id, nome, nascimento from public.patients order by nome asc")
@@ -2733,6 +2885,55 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
     extra_codes = [c for c in extra_codes if not (c in seen or seen.add(c))]
     st.session_state["extra_freq_codes"] = extra_codes
 
+    # ▶️ Sequência guiada (Solfeggio → Binaural → Chakras)
+    st.markdown("▶️ Sequência guiada (Solfeggio → Binaural → Chakras)")
+    sol_sec = st.slider("Duração por Solfeggio (s)", 5, 60, 20, key=K("binaural", "sol_sec"))
+    chak_sec = st.slider("Duração por Chakra (s)", 5, 60, 15, key=K("binaural", "chak_sec"))
+
+    # resolver Hz escolhidos
+    code2hz = {}
+    for r in (sol or []) + (chak or []):
+        c = str(r.get("code") or "").strip().upper()
+        hz = r.get("hz")
+        if c and hz is not None:
+            code2hz[c] = float(hz)
+
+    sel_sol_hz = []
+    for x in sel_sol:
+        c = (sol_map.get(x) or "").strip().upper()
+        if c and c in code2hz:
+            sel_sol_hz.append(code2hz[c])
+
+    sel_chak_hz = []
+    for x in sel_chak:
+        c = (chak_map.get(x) or "").strip().upper()
+        if c and c in code2hz:
+            sel_chak_hz.append(code2hz[c])
+
+    # se o "custom code" for um número (Hz), adiciona ao final como tom mono
+    if custom_code.strip():
+        try:
+            hz_custom = float(custom_code.strip().replace(",", "."))
+            # decide se entra como solfeggio ou chakra? coloca em chakras por padrão
+            sel_chak_hz.append(hz_custom)
+        except Exception:
+            pass
+
+    components.html(
+        webaudio_sequence_html(
+            sol_hz=sel_sol_hz,
+            chakra_hz=sel_chak_hz,
+            fc=float(carrier),
+            beat=float(beat),
+            sol_seconds=int(sol_sec),
+            binaural_seconds=int(dur_s),
+            chakra_seconds=int(chak_sec),
+            tone_gain=float(tone_gain),
+        ),
+        height=220,
+    )
+
+
     # WAV de preview/download (20s): usa um ganho proporcional ao "Volume do binaural"
     wav_amp = min(0.95, max(0.05, float(tone_gain) * 4.0))
     wav = synth_binaural_wav(float(carrier), float(beat), seconds=20, sr=44100, amp=float(wav_amp))
@@ -2762,11 +2963,44 @@ with tabs[0]:
     st.markdown("## Atendimento (Novo) • 9 Origens — Plano rápido")
     st.caption("Triagem simples com poucas perguntas. No fim, você recebe um plano integrado (binaural + solfeggio + chakras + pedras) para usar na sessão da cama.")
 
+    # --- Carregar atendimento (prefill) ---
+    # Em Streamlit, não podemos alterar st.session_state de um widget depois que ele já foi criado no mesmo "run".
+    # Então, quando você clica em "Carregar atendimento", guardamos os dados em att2_pending_load e aplicamos aqui,
+    # antes de renderizar os widgets do atendimento.
+    _pending = st.session_state.pop("att2_pending_load", None)
+    if isinstance(_pending, dict) and _pending.get("plan"):
+        _pl = _pending.get("plan") or {}
+        try:
+            st.session_state[K("att2","queixa")] = _pl.get("queixa", "") or ""
+            st.session_state[K("att2","objetivo")] = _pl.get("objetivo", "") or ""
+            _ans = _pl.get("answers") or {}
+            if isinstance(_ans, dict):
+                for _k in ["sono", "energia", "ansiedade", "dor"]:
+                    if _k in _ans:
+                        st.session_state[K("att2", _k)] = _ans.get(_k)
+                _o_sel = _pl.get("origens_sel") or _ans.get("origens_sel")
+                if isinstance(_o_sel, list):
+                    st.session_state[K("att2","origens_sel")] = _to_origens_options(_o_sel)
+        except Exception:
+            # não travar o app por causa de prefill
+            pass
+
+        _parecer = _pending.get("parecer") or ""
+        if _parecer:
+            try:
+                st.session_state[K("att2","ai_parecer")] = _parecer
+            except Exception:
+                pass
+        st.session_state["att2_loaded_plan"] = _pl
+        st.session_state["att2_loaded_flash"] = True
+
 
 # -------------------------
 # 0) Paciente (localizar / cadastrar)
 # -------------------------
 st.markdown("### 👤 Paciente")
+if st.session_state.pop("att2_loaded_flash", False):
+    st.success("Atendimento carregado ✅")
 with st.expander("Localizar ou cadastrar paciente", expanded=True):
     modo_paciente = st.radio(
         "O que você quer fazer?",
@@ -2785,7 +3019,7 @@ with st.expander("Localizar ou cadastrar paciente", expanded=True):
             st.error("Não consegui carregar a lista de pacientes. Verifique a conexão com o banco.")
             pats = []
 
-        q = st.text_input("Buscar por nome", value="", key=K("att2","patient_search"))
+        q = st.text_input("Buscar por nome", key=K("att2","patient_search"))
         options = []
         opt_to_id = {}
         opt_to_name = {}
@@ -2814,9 +3048,9 @@ with st.expander("Localizar ou cadastrar paciente", expanded=True):
     else:
         c1, c2 = st.columns(2)
         with c1:
-            nome_novo = st.text_input("Nome*", value="", key=K("att2","novo_nome"))
-            telefone_novo = st.text_input("Telefone", value="", key=K("att2","novo_tel"))
-            email_novo = st.text_input("Email", value="", key=K("att2","novo_email"))
+            nome_novo = st.text_input("Nome*", key=K("att2","novo_nome"))
+            telefone_novo = st.text_input("Telefone", key=K("att2","novo_tel"))
+            email_novo = st.text_input("Email", key=K("att2","novo_email"))
         with c2:
             nasc_novo = st.date_input("Nascimento", value=None, key=K("att2","novo_nasc"))
             notas_novo = st.text_area("Notas", height=80, key=K("att2","novo_notas"))
@@ -2845,9 +3079,13 @@ if patient_id:
     # -------------------------
     colA, colB = st.columns([2,1])
     with colA:
-        patient_nome = st.text_input("Nome do paciente", value=(patient_nome_sel or ""), disabled=bool(patient_id), key=K("att2","patient_nome"))
+        if K("att2","patient_nome") not in st.session_state:
+            st.session_state[K("att2","patient_nome")] = (patient_nome_sel or "")
+        patient_nome = st.text_input("Nome do paciente", disabled=bool(patient_id), key=K("att2","patient_nome"))
         queixa = st.text_area("Queixa principal (em 1 frase)", height=80, key=K("att2","queixa"))
     with colB:
+        if K("att2","objetivo") not in st.session_state:
+            st.session_state[K("att2","objetivo")] = "Relaxamento / ansiedade"
         objetivo = st.selectbox(
             "Objetivo principal da sessão",
             [
@@ -2859,7 +3097,6 @@ if patient_id:
                 "Autoestima / emocional",
                 "Limpeza energética / proteção",
             ],
-            index=0,
             key=K("att2","objetivo"),
         )
 
@@ -2945,45 +3182,39 @@ if patient_id:
                                     parecer_loaded = ""
                                 break
 
-                    st.session_state[K("att2","queixa")] = pl.get("queixa", "") or ""
-                    st.session_state[K("att2","objetivo")] = pl.get("objetivo", "") or ""
-
-                    ans = pl.get("answers") or {}
-                    if isinstance(ans, dict):
-                        for k in ["sono", "energia", "ansiedade", "dor"]:
-                            if k in ans:
-                                st.session_state[K("att2", k)] = ans.get(k)
-
-                        o_sel = pl.get("origens_sel") or ans.get("origens_sel")
-                        if isinstance(o_sel, list):
-                            st.session_state[K("att2","origens_sel")] = _to_origens_options(o_sel)
-
-                    st.session_state["att2_loaded_plan"] = pl
-                    if parecer_loaded:
-                        st.session_state[K("att2","ai_parecer")] = parecer_loaded
+                    return pl, parecer_loaded
 
                 with c_hist1:
                     if st.button("Carregar atendimento selecionado", key=K("att2","hist_load")):
                         rec = label_to_plan.get(pick_plan) or {}
-                        _load_plan_record(rec)
-                        st.success("Atendimento carregado ✅")
+                        pl, parecer = _load_plan_record(rec)
+                        st.session_state["att2_pending_load"] = {"plan": pl, "parecer": parecer}
                         st.rerun()
 
                 with c_hist2:
                     if st.button("Carregar o último atendimento", key=K("att2","hist_load_last")):
                         rec = (_plans_hist or [None])[0] or {}
-                        _load_plan_record(rec)
-                        st.success("Último atendimento carregado ✅")
+                        pl, parecer = _load_plan_record(rec)
+                        st.session_state["att2_pending_load"] = {"plan": pl, "parecer": parecer}
                         st.rerun()
 
     st.markdown("### 9 Origens (selecione as que mais fazem sentido)")
     # Usa a lista ORIGENS9 já existente no app (topo do arquivo)
     o9_options = [f"{o.get('label')} — {o.get('desc')}" for o in (ORIGENS9 or [])]
     o9_map = {o9_options[i]: (ORIGENS9[i].get("id"), ORIGENS9[i].get("label")) for i in range(len(o9_options))}
+
+    # --- init session_state (evita conflito entre default do widget e valores carregados do histórico) ---
+    def _ss_init(k, v):
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+    _ss_init(K("att2","origens_sel"), o9_options[:1] if o9_options else [])
+    for _k in ("dor", "ansiedade", "sono", "energia"):
+        _ss_init(K("att2", _k), 0)
+
     origens_sel = st.multiselect(
         "Escolha 1 a 3 origens",
         o9_options,
-        default=o9_options[:1] if o9_options else [],
         key=K("att2","origens_sel"),
     )
     if len(origens_sel) > 3:
@@ -2991,10 +3222,10 @@ if patient_id:
 
     st.markdown("### Intensidades (0 a 10)")
     c1, c2, c3, c4 = st.columns(4)
-    dor = c1.slider("Dor", 0, 10, 0, key=K("att2","dor"))
-    ansiedade = c2.slider("Ansiedade", 0, 10, 0, key=K("att2","ansiedade"))
-    sono = c3.slider("Sono ruim", 0, 10, 0, key=K("att2","sono"))
-    energia = c4.slider("Cansaço", 0, 10, 0, key=K("att2","energia"))
+    dor = c1.slider("Dor", 0, 10, key=K("att2","dor"))
+    ansiedade = c2.slider("Ansiedade", 0, 10, key=K("att2","ansiedade"))
+    sono = c3.slider("Sono ruim", 0, 10, key=K("att2","sono"))
+    energia = c4.slider("Cansaço", 0, 10, key=K("att2","energia"))
 
     # -------------------------
     # 2) Regras simples -> Plano
