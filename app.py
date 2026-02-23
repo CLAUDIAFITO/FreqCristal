@@ -16,6 +16,13 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+# --- Optional dependency: requests (OpenAI)
+try:
+    import requests  # type: ignore
+    HAS_REQUESTS = True
+except Exception:
+    HAS_REQUESTS = False
+
 # --- Optional dependency: reportlab (PDF)
 try:
     import reportlab  # type: ignore
@@ -23,6 +30,35 @@ try:
 except Exception:
     HAS_REPORTLAB = False
 
+
+
+# -----------------------------
+# Fitoterapia (sugestões seguras / educativas)
+# -----------------------------
+# Observação: sugestões gerais (bem-estar), não substituem orientação profissional.
+# Sempre revisar alergias, gestação/lactação e uso de medicamentos.
+FITO_MAP = {
+    "ACALMAR": {
+        "ervas": ["Passiflora", "Melissa", "Camomila"],
+        "preparo": "Chá: 1 colher (chá) do blend para 200 ml de água quente, 1–2x/dia (preferir fim da tarde/noite)."
+    },
+    "SONO": {
+        "ervas": ["Mulungu", "Passiflora", "Camomila"],
+        "preparo": "Chá: 1 colher (chá) para 200 ml, 30–60 min antes de dormir. Evitar se houver sonolência excessiva."
+    },
+    "DOR": {
+        "ervas": ["Cúrcuma", "Gengibre", "Unha-de-gato"],
+        "preparo": "Uso tradicional: infusão/decocção leve conforme a erva. Se usa anticoagulantes/anti-inflamatórios, alinhar com profissional."
+    },
+    "ENERGIA": {
+        "ervas": ["Alecrim", "Hortelã-pimenta", "Gengibre"],
+        "preparo": "Chá: 1 colher (chá) para 200 ml pela manhã. Evitar à noite se estiver com insônia."
+    },
+    "DIGESTAO": {
+        "ervas": ["Capim-limão", "Erva-doce", "Hortelã"],
+        "preparo": "Chá após refeições: 1 colher (chá) para 200 ml, 1–2x/dia."
+    },
+}
 
 # -----------------------------
 # Config
@@ -42,96 +78,12 @@ SUPABASE_URL = _get_env_or_secret("SUPABASE_URL")
 SUPABASE_KEY = _get_env_or_secret("SUPABASE_SERVICE_ROLE_KEY") or _get_env_or_secret("SUPABASE_KEY")
 
 BACKEND = "postgres" if DATABASE_URL else ("supabase" if (SUPABASE_URL and SUPABASE_KEY) else "none")
+
+OPENAI_API_KEY = _get_env_or_secret("OPENAI_API_KEY")
+OPENAI_MODEL = _get_env_or_secret("OPENAI_MODEL") or "gpt-4o-mini"
 if BACKEND == "none":
     st.error("Defina DATABASE_URL **OU** SUPABASE_URL + SUPABASE_KEY (preferencialmente SUPABASE_SERVICE_ROLE_KEY).")
     st.stop()
-
-
-# -----------------------------
-# IA (opcional) — Sugestões + redação do plano
-# -----------------------------
-OPENAI_API_KEY = _get_env_or_secret("OPENAI_API_KEY")
-OPENAI_MODEL = _get_env_or_secret("OPENAI_MODEL") or "gpt-4o-mini"
-
-def _safe_json_loads(text: str) -> Any:
-    try:
-        return json.loads(text)
-    except Exception:
-        return None
-
-def ai_suggest_plan_adjustments(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Retorna sugestões (para o terapeuta aprovar) e também um texto de plano 'bonito'.
-    - NÃO executa nada sozinho; é só recomendação.
-    - Requer OPENAI_API_KEY.
-    """
-    if not OPENAI_API_KEY:
-        raise RuntimeError("Defina OPENAI_API_KEY (em st.secrets ou variável de ambiente).")
-
-    import requests
-
-    system = (
-        "Você é um assistente clínico-escritor para terapias integrativas. "
-        "Não diagnostique. Não prometa cura. "
-        "Trabalhe SOMENTE com os dados recebidos. "
-        "Sua tarefa é: (1) sugerir ajustes no plano (protocolos/quantidade/cadência) com justificativa, "
-        "e (2) escrever um plano final claro e humano. "
-        "Se faltarem dados, diga 'não informado'. "
-        "Responda APENAS em JSON válido."
-    )
-
-    user = {
-        "tarefa": "Sugira ajustes (opcionais) e gere o texto do plano.",
-        "regras": {
-            "nao_inventar_protocolos": True,
-            "nao_indicar_medicacao": True,
-            "se_houver_alertas_respeitar": True,
-            "sempre_incluir_aviso_medico": True,
-        },
-        "entrada": payload,
-        "saida_json_exata": {
-            "suggestions": {
-                "add_protocols": ["..."],
-                "remove_protocols": ["..."],
-                "adjust_sessions_qty": {"from": 0, "to": 0, "why": "..."},
-                "adjust_cadence_days": {"from": 0, "to": 0, "why": "..."},
-                "notes_for_therapist": ["..."]
-            },
-            "plan_text": {
-                "resumo": "...",
-                "objetivos": ["...", "...", "..."],
-                "protocolo_sessao": ["..."],
-                "plano_casa_7_dias": ["..."],
-                "afirmacoes": ["..."],
-                "alertas": ["..."],
-                "reavaliacao": "...",
-                "aviso_medico": "..."
-            }
-        }
-    }
-
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-    body = {
-        "model": OPENAI_MODEL,
-        "temperature": 0.4,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
-        ],
-    }
-
-    r = requests.post(url, headers=headers, json=body, timeout=45)
-    if r.status_code >= 400:
-        raise RuntimeError(f"OpenAI API error {r.status_code}: {r.text[:400]}")
-
-    data = r.json()
-    content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content") or ""
-    out = _safe_json_loads(content.strip())
-    if not isinstance(out, dict):
-        raise RuntimeError("IA não retornou JSON válido.")
-    return out
-
-
 
 # -----------------------------
 # DB helpers
@@ -188,6 +140,48 @@ else:
         data = res.data or []
         return data[0] if data else None
 
+
+
+# -----------------------------
+# OpenAI helper (parecer IA)
+# -----------------------------
+def _openai_responses(prompt: str, system: str = "") -> str:
+    """
+    Chama a API da OpenAI (Responses API) e retorna texto.
+    Requer OPENAI_API_KEY em secrets/env e a lib requests instalada.
+    """
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY não configurada em Secrets.")
+    if not HAS_REQUESTS:
+        raise RuntimeError("Dependência 'requests' não instalada.")
+    url = "https://api.openai.com/v1/responses"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": OPENAI_MODEL,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system or "Você é um assistente que redige parecer terapêutico integrativo com cautela, sem diagnosticar e sem prometer cura."}]},
+            {"role": "user", "content": [{"type": "input_text", "text": prompt}]},
+        ],
+        "max_output_tokens": 450,
+    }
+    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=45)
+    if r.status_code >= 400:
+        raise RuntimeError(f"OpenAI error {r.status_code}: {r.text[:400]}")
+    data = r.json()
+
+    # Extract text from Responses API
+    out_parts = []
+    for item in data.get("output", []) or []:
+        if item.get("type") != "message":
+            continue
+        for c in item.get("content", []) or []:
+            if c.get("type") == "output_text":
+                out_parts.append(c.get("text", ""))
+    text = "\n".join([p for p in out_parts if p]).strip()
+    return text or "(sem texto retornado)"
 
 # -----------------------------
 # Domain model (anamnese simples)
@@ -2765,815 +2759,582 @@ Ex.: carrier 220 Hz e beat 10 Hz ⇒ L = **215 Hz**, R = **225 Hz** ⇒ o céreb
 # TAB: ATENDIMENTO
 # -------------------------
 with tabs[0]:
-    st.markdown("## Atendimento • Diagnóstico Integrativo (9 Origens)")
-    st.caption(
-        "Fluxo profissional: **medição + evidências + contexto** → gera causas prováveis (9 origens) e traduz para um plano terapêutico (protocolos + sessões). "
-        "Obs.: é um **modelo de triagem terapêutica** (não é diagnóstico médico)."
+    st.markdown("## Atendimento (Novo) • 9 Origens — Plano rápido")
+    st.caption("Triagem simples com poucas perguntas. No fim, você recebe um plano integrado (binaural + solfeggio + chakras + pedras) para usar na sessão da cama.")
+
+
+# -------------------------
+# 0) Paciente (localizar / cadastrar)
+# -------------------------
+st.markdown("### 👤 Paciente")
+with st.expander("Localizar ou cadastrar paciente", expanded=True):
+    modo_paciente = st.radio(
+        "O que você quer fazer?",
+        ["Localizar paciente existente", "Cadastrar novo paciente"],
+        horizontal=True,
+        key=K("att2","modo_paciente"),
     )
 
-    # -------------------------
-    # Sidebar — Paciente
-    # -------------------------
-    with st.sidebar:
-        st.header("Paciente")
+    sel_patient_id = st.session_state.get(K("att2","patient_id"))
+    sel_patient_name = st.session_state.get(K("att2","patient_nome_sel"), "")
+
+    if modo_paciente == "Localizar paciente existente":
         try:
-            patients = list_patients()
+            pats = list_patients()
         except Exception as e:
-            patients = []
-            st.error(f"Erro ao carregar patients: {e}")
+            st.error("Não consegui carregar a lista de pacientes. Verifique a conexão com o banco.")
+            pats = []
 
-        def lab(p):
-            nasc = p.get("nascimento")
-            tail = str(p.get("id") or "")[-4:]
-            return f'{p.get("nome","(sem nome)")} — {nasc or "s/n"} — {tail}'
+        q = st.text_input("Buscar por nome", value="", key=K("att2","patient_search"))
+        options = []
+        opt_to_id = {}
+        opt_to_name = {}
+        for p in (pats or []):
+            nome = (p.get("nome") or "").strip()
+            nasc = (p.get("nascimento") or "")
+            if q and q.lower() not in nome.lower():
+                continue
+            label = f"{nome}  •  {nasc}" if nasc else nome
+            if not label:
+                continue
+            options.append(label)
+            opt_to_id[label] = p.get("id")
+            opt_to_name[label] = nome
 
-        labels = ["— Novo paciente —"] + [lab(p) for p in patients]
-        sel = st.selectbox("Selecionar", labels, index=0, key=K("pat", "sel"))
-
-        if sel == "— Novo paciente —":
-            nome = st.text_input("Nome", key=K("pat", "nome"))
-            telefone = st.text_input("Telefone (opcional)", key=K("pat", "tel"))
-            email = st.text_input("E-mail (opcional)", key=K("pat", "email"))
-            nascimento = st.date_input("Nascimento (opcional)", value=None, key=K("pat", "nasc"))
-            pnotas = st.text_area("Notas (opcional)", key=K("pat", "notas"))
-            if st.button("Criar paciente", type="primary", use_container_width=True, key=K("pat", "create")):
-                if not nome.strip():
-                    st.warning("Informe o nome.")
-                else:
-                    try:
-                        st.session_state["patient_id"] = insert_patient(
-                            nome.strip(), telefone.strip(), email.strip(), nascimento, pnotas.strip()
-                        )
-                        st.success("Paciente criado!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao criar paciente: {e}")
-        else:
-            idxp = labels.index(sel) - 1
-            st.session_state["patient_id"] = patients[idxp]["id"] if idxp >= 0 else None
-
-        st.divider()
-        if st.button("🧹 Limpar formulário", use_container_width=True, key=K("att", "clear_form_btn")):
-            reset_att_form_state()
-            st.success("Formulário limpo.")
-            st.rerun()
-
-    patient_id = st.session_state.get("patient_id")
-    if not patient_id:
-        st.info("Selecione ou crie um paciente na sidebar.")
-        st.stop()
-
-    # --- ao trocar de paciente: reseta para não misturar dados e tenta carregar a última anamnese ---
-    if st.session_state.get("__att_patient_loaded") != patient_id:
-        reset_att_form_state()
-
-        try:
-            _latest = list_intakes(patient_id, limit=1)
-        except Exception:
-            _latest = []
-        if _latest:
-            try:
-                apply_intake_to_form(_latest[0])
-                st.session_state["last_intake_id"] = _latest[0].get("id")
-            except Exception:
-                pass
-
-        st.session_state["__att_patient_loaded"] = patient_id
-
-    # -------------------------
-    # Inicializa chaves da V4 (9 origens) se não existirem (compat)
-    # -------------------------
-    st.session_state.setdefault(K("att", "o9_metodo"), "Aurímetro")
-    for o in ORIGENS9:
-        oid = o["id"]
-        st.session_state.setdefault(K("att", f"o9_{oid}_meas"), 0)
-        st.session_state.setdefault(K("att", f"o9_{oid}_note"), "")
-        for ev in (o.get("evidence") or []):
-            evid = ev.get("id")
-            if evid:
-                st.session_state.setdefault(K("att", f"o9_{oid}_ev_{evid}"), False)
-
-    # -------------------------
-    # Leitura do estado (sem depender de qual aba está aberta)
-    # -------------------------
-    def _get_sym_0_10() -> Dict[str, int]:
-        return {s["id"]: int(st.session_state.get(K("att", s["id"]), 0) or 0) for s in V3_SYMPTOMS}
-
-    def _get_neuro_0_4() -> Dict[str, int]:
-        return {q["id"]: int(st.session_state.get(K("att", q["id"]), 0) or 0) for q in V3_NEURO}
-
-    def _get_o9_inputs() -> Tuple[Dict[str, float], Dict[str, Dict[str, bool]], Dict[str, str]]:
-        measures: Dict[str, float] = {}
-        evid: Dict[str, Dict[str, bool]] = {}
-        notes: Dict[str, str] = {}
-        for o in ORIGENS9:
-            oid = o["id"]
-            measures[oid] = float(st.session_state.get(K("att", f"o9_{oid}_meas"), 0) or 0)
-            notes[oid] = str(st.session_state.get(K("att", f"o9_{oid}_note"), "") or "")
-            emap: Dict[str, bool] = {}
-            for ev in (o.get("evidence") or []):
-                evid_id = ev.get("id")
-                if not evid_id:
-                    continue
-                emap[evid_id] = bool(st.session_state.get(K("att", f"o9_{oid}_ev_{evid_id}"), False))
-            evid[oid] = emap
-        return measures, evid, notes
-
-    # anamnese física / contexto (mantém o que já existia, mas em outra organização)
-    def _get_phys_meta() -> Dict[str, Any]:
-        return {
-            "phys_dor_local": str(st.session_state.get(K("att", "phys_dor_local"), "") or ""),
-            "phys_dor_score": int(st.session_state.get(K("att", "phys_dor_score"), 0) or 0),
-            "phys_dor_regioes": st.session_state.get(K("att", "phys_dor_regioes"), []) or [],
-            "phys_hist": str(st.session_state.get(K("att", "phys_hist"), "") or ""),
-            "phys_meds_txt": str(st.session_state.get(K("att", "phys_meds_txt"), "") or ""),
-            "phys_emocoes_lida": str(st.session_state.get(K("att", "phys_emocoes_lida"), "Prefiro não responder") or "Prefiro não responder"),
-            "phys_emocoes_obs": str(st.session_state.get(K("att", "phys_emocoes_obs"), "") or ""),
-            "phys_alergias": str(st.session_state.get(K("att", "phys_alergias"), "Não") or "Não"),
-            "phys_alergias_quais": str(st.session_state.get(K("att", "phys_alergias_quais"), "") or ""),
-            "phys_cirurgias": str(st.session_state.get(K("att", "phys_cirurgias"), "Não") or "Não"),
-            "phys_cirurgias_quais": str(st.session_state.get(K("att", "phys_cirurgias_quais"), "") or ""),
-            "phys_hist_familia": str(st.session_state.get(K("att", "phys_hist_familia"), "") or ""),
-            "phys_conflito_nivel": str(st.session_state.get(K("att", "phys_conflito_nivel"), "Não") or "Não"),
-            "phys_conflito_desc": str(st.session_state.get(K("att", "phys_conflito_desc"), "") or ""),
-            "phys_transt_alim": str(st.session_state.get(K("att", "phys_transt_alim"), "Não") or "Não"),
-            "phys_transt_alim_desc": str(st.session_state.get(K("att", "phys_transt_alim_desc"), "") or ""),
-        }
-
-    def _get_flags() -> Dict[str, bool]:
-        out: Dict[str, bool] = {}
-        for f in FLAGS:
-            out[f["id"]] = bool(st.session_state.get(K("att", f["id"]), False))
-        return out
-
-    sym = _get_sym_0_10()
-    neuro = _get_neuro_0_4()
-    time_min = int(st.session_state.get(K("att", "np_time_min"), 5) or 5)
-    phys_meta = _get_phys_meta()
-    flags = _get_flags()
-
-    measures, evidences, o9_notes = _get_o9_inputs()
-    o9_res = compute_origens9(measures, evidences, sym)
-    scores = compute_domain_scores_prof(o9_res.get("prob", {}), sym, phys_meta)
-    focus = pick_focus(scores, top_n=3)
-    qty, cadence = sessions_from_scores(scores)
-    readiness_pct = compute_readiness_pct(neuro, time_min)
-    qty, cadence, neuro_notes = apply_neuro_to_sessions(qty, cadence, readiness_pct, int(sym.get("sym_dor", 0)))
-    pillars = compute_core_pillars(sym)
-
-    # Protocolos / plano (prévia)
-    try:
-        protocols = load_protocols()
-    except Exception as e:
-        protocols = {}
-        st.warning(f"Não consegui ler protocol_library: {e}")
-    
-selected_names = select_protocols(scores, protocols) if protocols else []
-plan = merge_plan(selected_names, protocols) if protocols else {"chakras_prioritarios": [], "emocoes_prioritarias": [], "cristais_sugeridos": [], "fito_sugerida": [], "alertas": []}
-
-# --- IA (opcional): aplica override aprovado pelo terapeuta (Opção 2)
-ai_override = st.session_state.get(K("att", "ai_override"))
-if isinstance(ai_override, dict) and ai_override.get("patient_id") == patient_id:
-    try:
-        if isinstance(ai_override.get("selected_names"), list) and ai_override["selected_names"]:
-            selected_names = [str(x) for x in ai_override["selected_names"] if str(x).strip()]
-        if ai_override.get("sessions_qty") is not None:
-            qty = int(ai_override.get("sessions_qty") or qty)
-        if ai_override.get("cadence_days") is not None:
-            cadence = int(ai_override.get("cadence_days") or cadence)
-    except Exception:
-        pass
-    # Recalcula o plano consolidado com os protocolos ajustados
-    plan = merge_plan(selected_names, protocols) if protocols else plan
-
-    # Alertas (reaproveita sua lógica existente)
-    plan.setdefault("alertas", [])
-    def _add_alert(msg: str):
-        if msg and msg not in plan["alertas"]:
-            plan["alertas"].append(msg)
-
-    if flags.get("flag_back"):
-        _add_alert("Dificuldade para deitar de costas: ajuste posição/apoios na cama de cristal.")
-    if flags.get("flag_perfume"):
-        _add_alert("Sensibilidade a cheiros/perfumes: evite aromas fortes; use aromaterapia bem suave ou omita.")
-    if flags.get("flag_heat"):
-        _add_alert("Sensibilidade ao calor: mantenha ambiente fresco e confortável.")
-    if flags.get("flag_feet"):
-        _add_alert("Sensibilidade nos pés: evite pressão intensa; inicie com toques leves.")
-
-    condutas_alerta = build_alert_actions(plan.get("alertas", []), flags, phys_meta, {})
-    plan["condutas_alerta"] = condutas_alerta
-
-    # Binaural atual (mantém a aba Binaural como fonte de verdade)
-    audio_block = {
-        "binaural": {
-            "carrier_hz": float(st.session_state.get(KEY_CARRIER, 220.0)),
-            "beat_hz": float(st.session_state.get(KEY_BEAT, 10.0)),
-            "duracao_s": int(st.session_state.get(KEY_DUR_S, 120)),
-        },
-        "bg": {
-            "gain": float(st.session_state.get(KEY_BG_GAIN, 0.12)),
-            "note": "música de fundo é selecionada no computador (não é salva no banco).",
-        },
-    }
-    extra_freq_codes = st.session_state.get("extra_freq_codes") or []
-
-    # -------------------------
-    # A) Histórico (compacto)
-    # -------------------------
-    with st.expander("📚 Histórico (anamneses e planos)", expanded=False):
-        try:
-            intakes_hist = list_intakes(patient_id, limit=20)
-        except Exception as e:
-            intakes_hist = []
-            st.warning(f"Não consegui carregar anamneses: {e}")
-
-        if intakes_hist:
-            rows = []
-            for r in intakes_hist:
-                sc = _as_dict(r.get("scores_json"))
-                top_dom = sorted(sc.items(), key=lambda x: float(x[1]) if isinstance(x[1], (int, float)) else 0.0, reverse=True)[:2]
-                top_dom_s = ", ".join([f"{_DOMAIN_LABEL.get(k,k)}:{float(v):.0f}%" for k, v in top_dom]) if top_dom else ""
-                # top origens (se existir)
-                ans = _as_dict(r.get("answers_json"))
-                o9 = ans.get("origens9") or {}
-                top_o = []
-                try:
-                    if isinstance(o9, dict):
-                        for oid, ob in o9.items():
-                            if isinstance(ob, dict):
-                                top_o.append((oid, float(ob.get("meas") or 0)))
-                    top_o = sorted(top_o, key=lambda x: x[1], reverse=True)[:2]
-                except Exception:
-                    top_o = []
-                top_o_s = ", ".join([oid for oid, _v in top_o]) if top_o else ""
-
-                rows.append({
-                    "quando": str(r.get("created_at") or "")[:19],
-                    "queixa": (r.get("complaint") or ""),
-                    "top_domínios": top_dom_s,
-                    "top_origens": top_o_s,
-                    "id": str(r.get("id") or "")[-6:],
-                })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-            opts = []
-            for r in intakes_hist:
-                when = str(r.get("created_at") or "")[:10]
-                cid = str(r.get("id") or "")[-4:]
-                comp = (r.get("complaint") or "—")
-                comp = comp if len(comp) <= 60 else comp[:57] + "..."
-                opts.append(f"{when} • {comp} • {cid}")
-
-            sel_i = st.selectbox("Carregar anamnese", opts, key=K("hist", "intake_sel"))
-            rsel = intakes_hist[opts.index(sel_i)]
-            c1, c2 = st.columns(2)
-            if c1.button("Carregar no formulário", type="primary", use_container_width=True, key=K("hist", "load_intake")):
-                apply_intake_to_form(rsel)
-                st.success("Anamnese carregada.")
-                st.rerun()
-            if c2.button("Limpar (não apaga histórico)", use_container_width=True, key=K("hist", "clear_form")):
-                reset_att_form_state()
-                st.success("Formulário limpo.")
+        if options:
+            pick = st.selectbox("Selecione", options, key=K("att2","patient_pick"))
+            if st.button("Usar este paciente", key=K("att2","btn_use_patient")):
+                st.session_state[K("att2","patient_id")] = opt_to_id.get(pick)
+                st.session_state[K("att2","patient_nome_sel")] = opt_to_name.get(pick, "")
+                st.success("Paciente selecionado.")
                 st.rerun()
         else:
-            st.caption("Sem anamneses registradas ainda.")
+            st.info("Nenhum paciente encontrado com esse filtro.")
 
-        st.divider()
-        st.markdown("**Últimos planos**")
-        try:
-            plans_hist = list_plans(patient_id, limit=10)
-        except Exception as e:
-            plans_hist = []
-            st.warning(f"Não consegui carregar planos: {e}")
-
-        if plans_hist:
-            p0 = plans_hist[0]
-            st.write(
-                f"Último plano: {str(p0.get('created_at') or '')[:19]} • sessões={p0.get('sessions_qty')} • cadência={p0.get('cadence_days')} dias"
-            )
-            try:
-                sess = list_sessions_nova(p0.get("id"), limit=50)
-            except Exception:
-                sess = []
-            if sess:
-                st.dataframe(
-                    pd.DataFrame([{"n": r.get("session_n"), "data": r.get("scheduled_date"), "status": r.get("status")} for r in sess]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-        else:
-            st.caption("Nenhum plano salvo ainda.")
-
-    # -------------------------
-    # B) Fluxo principal (4 abas)
-    # -------------------------
-    t1, t2, t3, t4 = st.tabs(["🧭 Causas (9 origens)", "📝 Anamnese & contexto", "🧾 Plano & sessões", "🖨️ Impressão"])
-
-    with t1:
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            complaint = st.text_input("Queixa principal (curta)", key=K("att", "complaint"))
-        with col2:
-            atend_date = st.date_input("Data", value=date.today(), key=K("att", "date"))
-
-        st.info("Preencha **Medição (0–10)** + **Evidências**. O sistema calcula **probabilidade** e **confiança** por origem.")
-        mcol1, mcol2 = st.columns([1, 2])
-        with mcol1:
-            metodo = st.selectbox("Método da medição", ["Aurímetro", "Pêndulo", "Entrevista", "Outro"], key=K("att", "o9_metodo"))
-        with mcol2:
-            st.caption("Dica: use a nota de cada origem para registrar **o porquê** da medição (ex.: leitura do aurímetro, frase-chave do paciente).")
-
-        cols = st.columns(3)
-        for i, o in enumerate(ORIGENS9):
-            oid = o["id"]
-            with cols[i % 3]:
-                with st.expander(f"{i+1}. {o['label']}", expanded=(i < 3)):
-                    st.caption(o.get("desc") or "")
-                    st.slider("Medição (0–10)", 0, 10, key=K("att", f"o9_{oid}_meas"), help="0 = não aparece · 10 = muito forte")
-                    st.markdown("**Evidências**")
-                    for ev in (o.get("evidence") or []):
-                        evid = ev.get("id")
-                        if not evid:
-                            continue
-                        st.checkbox(ev.get("label") or evid, key=K("att", f"o9_{oid}_ev_{evid}"))
-                    st.text_area("Observação (opcional)", height=68, key=K("att", f"o9_{oid}_note"))
-
-        st.divider()
-        st.markdown("### Resultado da leitura (automático)")
-
-        # tabela completa
-        rows = []
-        for o in ORIGENS9:
-            oid = o["id"]
-            prob = float(o9_res.get("prob", {}).get(oid, 0.0))
-            raw = float(o9_res.get("raw", {}).get(oid, 0.0))
-            conf = float(o9_res.get("confidence", {}).get(oid, 0.0))
-            rows.append({
-                "origem": o["label"],
-                "score_0_100": round(raw, 1),
-                "prob_%": round(prob * 100.0, 1),
-                "confiança": f"{_conf_label(conf)} ({conf:.2f})",
-                "evidências_marcadas": len(o9_res.get("hits", {}).get(oid, []) or []),
-            })
-        df_o9 = pd.DataFrame(rows).sort_values(["prob_%", "score_0_100"], ascending=False)
-        st.dataframe(df_o9, use_container_width=True, hide_index=True)
-
-        # top 3 + evidências
-        st.markdown("### Top 3 origens (com evidências)")
-        top3 = df_o9.head(3).to_dict("records") if not df_o9.empty else []
-        for r in top3:
-            st.markdown(f"**{r['origem']}** — prob **{r['prob_%']}%** · confiança **{r['confiança']}**")
-            # progress (prob)
-            st.progress(min(1.0, float(r["prob_%"]) / 100.0))
-            # mostra evidências
-            oid = None
-            for o in ORIGENS9:
-                if o["label"] == r["origem"]:
-                    oid = o["id"]
-                    break
-            hits = o9_res.get("hits", {}).get(oid, []) if oid else []
-            if hits:
-                st.caption("Evidências marcadas: " + "; ".join(hits[:6]) + ("…" if len(hits) > 6 else ""))
-            else:
-                st.caption("Sem evidências marcadas (confiança tende a cair).")
-
-    with t2:
-        st.markdown("### Mapa rápido (0–10)")
-        st.caption(SCALE_0_10_HELP)
-
-        t_corpo, t_mente, t_pert = st.tabs(["🧍 Corpo", "🧠 Mente", "🫂 Pertencimento"])
-        with t_corpo:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.slider("Dor no corpo (geral)", 0, 10, key=K("att", "sym_dor"), help=SCALE_0_10_HELP)
-                st.slider("Sono ruim (insônia / acorda cansada)", 0, 10, key=K("att", "sym_sono"), help=SCALE_0_10_HELP)
-                st.slider("Sobrecarga / responsabilidades", 0, 10, key=K("att", "sym_sobrecarga"), help=SCALE_0_10_HELP)
-            with c2:
-                st.slider("Rigidez / travamento", 0, 10, key=K("att", "sym_rigidez"), help=SCALE_0_10_HELP)
-                st.slider("Cansaço / fadiga", 0, 10, key=K("att", "sym_fadiga"), help=SCALE_0_10_HELP)
-
-        with t_mente:
-            m1, m2 = st.columns(2)
-            with m1:
-                st.slider("Ansiedade / agitação", 0, 10, key=K("att", "sym_ansiedade"), help=SCALE_0_10_HELP)
-                st.slider("Irritabilidade / impaciência", 0, 10, key=K("att", "sym_irritabilidade"), help=SCALE_0_10_HELP)
-            with m2:
-                st.slider("Pensamentos repetitivos / ruminação", 0, 10, key=K("att", "sym_ruminacao"), help=SCALE_0_10_HELP)
-
-        with t_pert:
-            p1, p2 = st.columns(2)
-            with p1:
-                st.slider("Falta de pertencimento / desconexão", 0, 10, key=K("att", "sym_falta_pertenc"), help=SCALE_0_10_HELP)
-                st.slider("Autojulgamento / vergonha", 0, 10, key=K("att", "sym_autocritica"), help=SCALE_0_10_HELP)
-            with p2:
-                st.slider("Isolamento / dificuldade de pedir ajuda", 0, 10, key=K("att", "sym_isolamento"), help=SCALE_0_10_HELP)
-
-        st.divider()
-        st.markdown("### Neuroplasticidade (0–4)")
-        st.caption("0 = baixo/difícil agora · 4 = alto/fácil agora (exceto alerta, onde 4 = muito alerta).")
-        n1, n2 = st.columns(2)
-        with n1:
-            st.slider("Meu corpo/mente fica em alerta com facilidade", 0, 4, key=K("att", "np_alerta"))
-            st.slider("Consigo pausar 30–60s antes de reagir", 0, 4, key=K("att", "np_pausa"))
-        with n2:
-            st.slider("Tenho pelo menos 1 recurso que me acalma", 0, 4, key=K("att", "np_recurso"))
-            st.slider("Consigo praticar um exercício curto todos os dias", 0, 4, key=K("att", "np_adesao"))
-
-        # tempo disponível (min/dia)
-        time_labels = [lab for _m, lab in V3_TIME_OPTIONS]
-        time_vals = [int(_m) for _m, _lab in V3_TIME_OPTIONS]
-        default_min = st.session_state.get(K("att", "np_time_min"), 5)
-        if default_min not in time_vals:
-            default_min = 5
-        idx_def = time_vals.index(default_min)
-        sel_lab = st.selectbox("Tempo disponível para prática (em casa)", time_labels, index=idx_def, key=K("att", "np_time_lab"))
-        st.session_state[K("att", "np_time_min")] = int(time_vals[time_labels.index(sel_lab)])
-
-        st.divider()
-        st.markdown("### Sinais de atenção")
-        fcols = st.columns(2)
-        for i, f in enumerate(FLAGS):
-            with fcols[i % 2]:
-                st.checkbox(f["label"], key=K("att", f["id"]))
-
-        with st.expander("🩺 Anamnese física (detalhes)", expanded=False):
-            c1, c2 = st.columns(2)
-            with c1:
-                st.text_input("Dor / queixa principal (onde dói?)", key=K("att", "phys_dor_local"))
-            with c2:
-                st.slider("Intensidade da dor (0=sem dor; 10=máxima)", 0, 10, key=K("att", "phys_dor_score"))
-            st.multiselect("Regiões afetadas (marque se fizer sentido)", PHYS_DOR_REGIOES, key=K("att", "phys_dor_regioes"))
-            st.text_area("Histórico de saúde / cirurgias relevantes", height=80, key=K("att", "phys_hist"))
-            st.text_area("Medicamentos / tratamentos atuais", height=80, key=K("att", "phys_meds_txt"))
-
-            st.markdown("**Aspectos emocionais e contexto**")
-            EMO_OPTS = ["Prefiro não responder", "Guardo pra mim / engulo", "Falo / peço ajuda", "Explodo / fico irritada", "Choro / fico retraída", "Processo com terapia/meditação", "Outro"]
-            CONFLITO_OPTS = ["Não", "Leve", "Moderado", "Grave"]
-            SIMNAO_OPTS = ["Não", "Sim"]
-            TRANST_ALIM_OPTS = ["Não", "Suspeita/Em investigação", "Sim"]
-
-            if st.session_state.get(K("att", "phys_emocoes_lida")) not in EMO_OPTS:
-                st.session_state[K("att", "phys_emocoes_lida")] = EMO_OPTS[0]
-            if st.session_state.get(K("att", "phys_conflito_nivel")) not in CONFLITO_OPTS:
-                st.session_state[K("att", "phys_conflito_nivel")] = CONFLITO_OPTS[0]
-            if st.session_state.get(K("att", "phys_alergias")) not in SIMNAO_OPTS:
-                st.session_state[K("att", "phys_alergias")] = SIMNAO_OPTS[0]
-            if st.session_state.get(K("att", "phys_cirurgias")) not in SIMNAO_OPTS:
-                st.session_state[K("att", "phys_cirurgias")] = SIMNAO_OPTS[0]
-            if st.session_state.get(K("att", "phys_transt_alim")) not in TRANST_ALIM_OPTS:
-                st.session_state[K("att", "phys_transt_alim")] = TRANST_ALIM_OPTS[0]
-
-            d1, d2 = st.columns(2)
-            with d1:
-                st.selectbox("Como você lida com suas emoções?", EMO_OPTS, key=K("att", "phys_emocoes_lida"))
-            with d2:
-                st.selectbox("Atualmente possui conflito familiar?", CONFLITO_OPTS, key=K("att", "phys_conflito_nivel"))
-            st.text_area("Se sim, descreva (opcional)", height=68, key=K("att", "phys_conflito_desc"))
-            st.text_input("Observações sobre emoções (opcional)", key=K("att", "phys_emocoes_obs"))
-
-            st.markdown("**Saúde e antecedentes**")
-            e1, e2 = st.columns(2)
-            with e1:
-                st.selectbox("Tem alguma alergia?", SIMNAO_OPTS, key=K("att", "phys_alergias"))
-                st.text_input("Se sim, qual(is)?", key=K("att", "phys_alergias_quais"))
-            with e2:
-                st.selectbox("Já fez alguma cirurgia?", SIMNAO_OPTS, key=K("att", "phys_cirurgias"))
-                st.text_input("Se sim, qual(is)?", key=K("att", "phys_cirurgias_quais"))
-
-            st.text_area("Histórico familiar relevante (se houver)", height=80, key=K("att", "phys_hist_familia"))
-            f1, f2 = st.columns(2)
-            with f1:
-                st.selectbox("Possui transtorno alimentar?", TRANST_ALIM_OPTS, key=K("att", "phys_transt_alim"))
-            with f2:
-                st.text_input("Se sim/suspeita, qual/observações?", key=K("att", "phys_transt_alim_desc"))
-
-        st.text_area("Notas do terapeuta (opcional)", height=100, key=K("att", "notes"))
-
-    with t3:
-        st.markdown("### Painel rápido")
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Dor/Fibro", f"{pillars['Dor/Fibro']:.0f}%")
-        k2.metric("Sistema nervoso", f"{pillars['Sistema nervoso']:.0f}%")
-        k3.metric("Burnout", f"{pillars['Burnout/Cansaço']:.0f}%")
-        k4.metric("Pertencimento", f"{pillars['Pertencimento']:.0f}%")
-        k5.metric("Prontidão", f"{readiness_pct:.0f}%")
-
-        st.divider()
-        st.markdown("### Domínios (0–100) • usados para selecionar protocolos")
-        df_scores = pd.DataFrame(
-            [{"domínio": _DOMAIN_LABEL.get(k, k), "score_%": round(v, 1)} for k, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
-        )
-        st.dataframe(df_scores, use_container_width=True, hide_index=True)
-
-        st.markdown("### Foco (Top 3)")
-        if focus:
-            st.dataframe(
-                pd.DataFrame(
-                    [{"prioridade": i + 1, "domínio": _DOMAIN_LABEL.get(d, d), "score_%": round(sc, 1)} for i, (d, sc) in enumerate(focus)]
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.caption("—")
-
-        st.divider()
-        st.markdown("### Sessões sugeridas")
-        st.write(f"**Quantidade:** {qty}  •  **Cadência:** {cadence} dias")
-        if neuro_notes:
-            st.caption("Ajustes por neuroplasticidade: " + " · ".join(neuro_notes))
-
-        st.markdown("### Protocolos selecionados")
-        if selected_names:
-            st.dataframe(pd.DataFrame([{"protocolo": n} for n in selected_names]), use_container_width=True, hide_index=True)
-        else:
-            st.caption("Sem protocolos (verifique se protocol_library está disponível).")
-
-        st.markdown("### Plano consolidado (resumo)")
-        plan_rows = [
-            {"categoria": "Chakras prioritários", "itens": _join_list(plan.get("chakras_prioritarios"), sep="; ")},
-            {"categoria": "Emoções prioritárias", "itens": _join_list(plan.get("emocoes_prioritarias"), sep="; ")},
-            {"categoria": "Cristais sugeridos", "itens": _join_list(plan.get("cristais_sugeridos"), sep="; ")},
-            {"categoria": "Fito sugerida", "itens": _join_list(plan.get("fito_sugerida"), sep="; ")},
-            {"categoria": "Alertas / cuidados", "itens": _join_list(plan.get("alertas"), sep="; ")},
-        ]
-        st.dataframe(pd.DataFrame(plan_rows), use_container_width=True, hide_index=True)
-
-        st.markdown("### 🚨 Alertas e condutas")
-        if plan.get("condutas_alerta"):
-            df_ca = pd.DataFrame(plan.get("condutas_alerta"), columns=["Prioridade", "Categoria", "Detalhe", "Conduta sugerida"])
-            st.dataframe(df_ca, use_container_width=True, hide_index=True)
-        else:
-            st.caption("Sem alertas relevantes (além do básico).")
-
-
-# -----------------------------
-# 🤖 Agente IA (opção 2): sugere e você aprova
-# -----------------------------
-with st.expander("🤖 Agente IA — Sugestões (você aprova antes de salvar)", expanded=False):
-    if not OPENAI_API_KEY:
-        st.info("Para usar o agente IA, defina **OPENAI_API_KEY** em `st.secrets` ou variável de ambiente.")
     else:
-        c_ai1, c_ai2 = st.columns([1, 1])
-        with c_ai1:
-            if st.button("Gerar sugestões IA", use_container_width=True, key=K("att", "ai_gen")):
-                try:
-                    payload = {
-                        "patient_id": patient_id,
-                        "complaint": complaint,
-                        "scores": scores,
-                        "focus": focus,
-                        "sessions_qty": qty,
-                        "cadence_days": cadence,
-                        "selected_protocols": selected_names,
-                        "plan_summary": plan,
-                        "flags": flags,
-                        "phys_meta": phys_meta,
-                        "origens9_resultado": o9_res,
-                        "pillars_v3": pillars,
-                        "readiness_pct": readiness_pct,
-                    }
-                    st.session_state[K("att", "ai_result")] = ai_suggest_plan_adjustments(payload)
-                    st.success("Sugestões geradas. Revise abaixo e aplique se fizer sentido.")
-                except Exception as e:
-                    st.error(f"Erro ao gerar sugestões IA: {e}")
+        c1, c2 = st.columns(2)
+        with c1:
+            nome_novo = st.text_input("Nome*", value="", key=K("att2","novo_nome"))
+            telefone_novo = st.text_input("Telefone", value="", key=K("att2","novo_tel"))
+            email_novo = st.text_input("Email", value="", key=K("att2","novo_email"))
+        with c2:
+            nasc_novo = st.date_input("Nascimento", value=None, key=K("att2","novo_nasc"))
+            notas_novo = st.text_area("Notas", height=80, key=K("att2","novo_notas"))
 
-        ai_res = st.session_state.get(K("att", "ai_result"))
-        if isinstance(ai_res, dict):
-            sug = ai_res.get("suggestions") or {}
-            plan_text = ai_res.get("plan_text") or {}
-
-            st.markdown("#### Sugestões (para você decidir)")
-            st.write(sug)
-
-            # Monta uma proposta de override
-            add_p = [p for p in (sug.get("add_protocols") or []) if p]
-            rem_p = [p for p in (sug.get("remove_protocols") or []) if p]
-            new_selected = [p for p in (selected_names or []) if p and p not in rem_p]
-            for p in add_p:
-                if p not in new_selected:
-                    new_selected.append(p)
-
-            qty_to = (sug.get("adjust_sessions_qty") or {}).get("to")
-            cad_to = (sug.get("adjust_cadence_days") or {}).get("to")
-
-            st.markdown("#### Aplicar (override)")
-            c1, c2, c3 = st.columns([2, 1, 1])
-            with c1:
-                sel_override = st.multiselect(
-                    "Protocolos após aplicar",
-                    options=sorted(list(dict.fromkeys((selected_names or []) + (add_p or [])))),
-                    default=new_selected,
-                    key=K("att", "ai_sel_override"),
-                )
-            with c2:
-                qty_override = st.number_input(
-                    "Qtd sessões (override)",
-                    min_value=1, max_value=12,
-                    value=int(qty_to) if isinstance(qty_to, (int, float)) and int(qty_to) > 0 else int(qty),
-                    step=1,
-                    key=K("att", "ai_qty_override"),
-                )
-            with c3:
-                cad_override = st.number_input(
-                    "Cadência (dias)",
-                    min_value=7, max_value=30,
-                    value=int(cad_to) if isinstance(cad_to, (int, float)) and int(cad_to) > 0 else int(cadence),
-                    step=1,
-                    key=K("att", "ai_cad_override"),
-                )
-
-            if st.button("Aplicar override agora", type="secondary", use_container_width=True, key=K("att", "ai_apply")):
-                st.session_state[K("att", "ai_override")] = {
-                    "patient_id": patient_id,
-                    "selected_names": list(sel_override or []),
-                    "sessions_qty": int(qty_override),
-                    "cadence_days": int(cad_override),
-                    "applied_from_ai": True,
-                }
-                st.success("Override aplicado. O resumo acima será recalculado nesta tela.")
-                st.rerun()
-
-            st.markdown("#### Texto sugerido (para seu receituário)")
-            if plan_text:
-                st.text_area("Plano (texto)", value=json.dumps(plan_text, ensure_ascii=False, indent=2), height=260)
+        if st.button("Cadastrar paciente", key=K("att2","btn_create_patient")):
+            if not (nome_novo or "").strip():
+                st.warning("Preencha o nome.")
             else:
-                st.caption("A IA não retornou 'plan_text'.")
-
-        st.divider()
-        st.markdown("### Botões finais")
-        b1, b2 = st.columns(2)
-
-        # answers_store: salva tudo organizado
-        answers_store: Dict[str, Any] = {}
-        answers_store["o9_metodo"] = str(st.session_state.get(K("att", "o9_metodo"), "Aurímetro") or "Aurímetro")
-        answers_store["origens9"] = {
-            o["id"]: {
-                "meas": int(st.session_state.get(K("att", f"o9_{o['id']}_meas"), 0) or 0),
-                "note": str(st.session_state.get(K("att", f"o9_{o['id']}_note"), "") or ""),
-                "evidence": {
-                    (ev.get("id") or ""): bool(st.session_state.get(K("att", f"o9_{o['id']}_ev_{ev.get('id')}"), False))
-                    for ev in (o.get("evidence") or [])
-                    if ev.get("id")
-                },
-            }
-            for o in ORIGENS9
-        }
-        # V3 symptoms + neuro + tempo
-        for s in V3_SYMPTOMS:
-            answers_store[s["id"]] = int(st.session_state.get(K("att", s["id"]), 0) or 0)
-        for q in V3_NEURO:
-            answers_store[q["id"]] = int(st.session_state.get(K("att", q["id"]), 0) or 0)
-        answers_store["np_time_min"] = int(st.session_state.get(K("att", "np_time_min"), 5) or 5)
-        # físico
-        answers_store.update(phys_meta or {})
-
-        notes = st.session_state.get(K("att", "notes"), "") or ""
-        complaint = st.session_state.get(K("att", "complaint"), "") or ""
-        atend_date = st.session_state.get(K("att", "date"), date.today())
-
-        with b1:
-            if st.button("Salvar anamnese", use_container_width=True, key=K("att", "save_intake")):
                 try:
-                    intake_id = insert_intake(patient_id, complaint, answers_store, scores, flags, notes)
-                    st.session_state["last_intake_id"] = intake_id
-                    st.success("Anamnese salva!")
-                except Exception as e:
-                    st.error(f"Erro ao salvar anamnese: {e}")
-
-        with b2:
-            if st.button("Gerar plano terapêutico + criar sessões", type="primary", use_container_width=True, key=K("att", "gen_plan")):
-                try:
-                    intake_id = st.session_state.get("last_intake_id")
-                    if not intake_id:
-                        intake_id = insert_intake(patient_id, complaint, answers_store, scores, flags, notes)
-                        st.session_state["last_intake_id"] = intake_id
-
-                    scripts = build_session_scripts(qty, cadence, focus, selected_names, protocols, audio_block, extra_freq_codes)
-                    for s in scripts:
-                        s["alertas"] = plan.get("alertas", [])
-                        s["condutas_alerta"] = plan.get("condutas_alerta", [])
-                        s["phys_meta"] = phys_meta
-                        s["origens9_resultado"] = o9_res
-
-                    plan_id = insert_plan(
-                        patient_id=patient_id,
-                        intake_id=intake_id,
-                        focus=focus,
-                        selected_names=selected_names,
-                        sessions_qty=qty,
-                        cadence_days=cadence,
-                        plan_json={
-                            "date": str(atend_date),
-                            "complaint": complaint,
-                            "scores": scores,
-                            "focus": focus,
-                            "origens9_resultado": o9_res,
-                            "pillars_v3": pillars,
-                            "readiness_pct": readiness_pct,
-                            "np_time_min": time_min,
-                            "answers": answers_store,
-                            "selected_protocols": selected_names,
-                            "plan": plan,
-                            "audio": audio_block,
-                            "frequencias": [{"code": c} for c in extra_freq_codes],
-                            "ai_result": st.session_state.get(K("att", "ai_result")),
-                            "ai_override": st.session_state.get(K("att", "ai_override")),
-                        },
-                    )
-                    for s in scripts:
-                        insert_session_nova(plan_id, patient_id, int(s["session_n"]), s["scheduled_date"], s["status"], s)
-
-                    st.success(f"Plano criado e sessões geradas em sessions_nova! plan_id={plan_id}")
+                    new_id = insert_patient(nome_novo.strip(), telefone_novo, email_novo, nasc_novo, notas_novo)
+                    st.session_state[K("att2","patient_id")] = new_id
+                    st.session_state[K("att2","patient_nome_sel")] = nome_novo.strip()
+                    st.success("Paciente cadastrado e selecionado.")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Erro ao gerar plano/sessões: {e}")
+                except Exception:
+                    st.error("Não consegui cadastrar o paciente. Verifique o banco e tente novamente.")
 
-    with t4:
-        st.subheader("🖨️ Receituário para impressão")
-        with st.expander("Gerar receituário (puxa as informações salvas do paciente)", expanded=True):
+patient_id = st.session_state.get(K("att2","patient_id"))
+patient_nome_sel = st.session_state.get(K("att2","patient_nome_sel"), "")
+if patient_id:
+    st.caption(f"Paciente selecionado: **{patient_nome_sel}**")
+
+
+    # -------------------------
+    # 1) Perguntas (curtas)
+    # -------------------------
+    colA, colB = st.columns([2,1])
+    with colA:
+        patient_nome = st.text_input("Nome do paciente", value=(patient_nome_sel or ""), disabled=bool(patient_id), key=K("att2","patient_nome"))
+        queixa = st.text_area("Queixa principal (em 1 frase)", height=80, key=K("att2","queixa"))
+    with colB:
+        objetivo = st.selectbox(
+            "Objetivo principal da sessão",
+            [
+                "Relaxamento / ansiedade",
+                "Sono / descanso",
+                "Dor / inflamação",
+                "Foco calmo / clareza mental",
+                "Aterramento / presença",
+                "Autoestima / emocional",
+                "Limpeza energética / proteção",
+            ],
+            index=0,
+            key=K("att2","objetivo"),
+        )
+
+    # -------------------------
+    # 0b) Histórico do paciente (carregar atendimentos anteriores)
+    # -------------------------
+    if patient_id:
+        with st.expander("📚 Histórico do paciente", expanded=False):
             try:
-                _plans = list_plans(patient_id)
-            except Exception as e:
-                _plans = []
-                st.warning(f"Não consegui listar planos: {e}")
+                _plans_hist = list_plans(patient_id, limit=15)
+                _intakes_hist = list_intakes(patient_id, limit=30)
+            except Exception:
+                _plans_hist, _intakes_hist = [], []
 
-            if not _plans:
-                st.info("Ainda não há plano salvo para este paciente. Gere um plano e salve antes de imprimir.")
+            if not _plans_hist:
+                st.info("Ainda não há atendimentos salvos para este paciente.")
             else:
-                def _plan_label(p):
-                    dt = p.get("created_at") or (p.get("plan_json") or {}).get("date") or ""
-                    dt = _fmt_date_br(dt) if dt else ""
-                    pid = str(p.get("id") or "")[-6:]
-                    qty2 = p.get("sessions_qty") or ""
-                    cad2 = p.get("cadence_days") or ""
-                    extra = f" • {qty2} sessões/{cad2}d" if qty2 and cad2 else ""
-                    return f"{dt or 'sem data'} — Plano {pid}{extra}"
+                def _fmt_dt(v: Any) -> str:
+                    try:
+                        if isinstance(v, str):
+                            return v.replace("T", " ")[:16]
+                        return str(v)[:16]
+                    except Exception:
+                        return str(v)
 
-                plan_labels = [_plan_label(p) for p in _plans]
-                rx_sel = st.selectbox("Plano para imprimir", plan_labels, index=0, key=K("rx", "plan_sel"))
-                plan_row = _plans[plan_labels.index(rx_sel)]
-                plan_id = plan_row.get("id")
+                def _to_origens_options(labels: List[str]) -> List[str]:
+                    """Converte lista de labels (ex.: 'Emocional') em opções completas 'Emocional — desc'."""
+                    out = []
+                    for lbl in (labels or []):
+                        if not isinstance(lbl, str):
+                            continue
+                        if "—" in lbl:
+                            out.append(lbl)
+                            continue
+                        for o in (ORIGENS9 or []):
+                            if (o.get("label") or "") == lbl:
+                                desc = o.get("desc") or ""
+                                out.append(f"{lbl} — {desc}".strip())
+                                break
+                    return out
 
-                try:
-                    sess_rows = list_sessions_nova(plan_id)
-                except Exception as e:
-                    sess_rows = []
-                    st.warning(f"Não consegui listar sessions_nova: {e}")
-
-                pat = get_patient(patient_id) or {"id": patient_id}
-                rx_data = _build_receituario_data_from_plan(pat, plan_row, sess_rows)
-
-                st.caption("Dica: mantenha o template DOCX no mesmo diretório do app (Receituario_Claudiafito_Template.docx) ou envie abaixo.")
-                tpl_up = st.file_uploader("Template DOCX (opcional)", type=["docx"], key=K("rx", "tpl"))
-
-                colrx1, colrx2 = st.columns(2)
-                with colrx1:
-                    if st.button("Gerar receituário (DOCX)", use_container_width=True, key=K("rx", "gen_docx")):
+                plan_labels = []
+                label_to_plan = {}
+                for p in (_plans_hist or []):
+                    dt = _fmt_dt(p.get("created_at"))
+                    pj = p.get("plan_json") or {}
+                    if isinstance(pj, str):
                         try:
-                            tpl_io = io.BytesIO(tpl_up.read()) if tpl_up else None
-                            st.session_state["rx_docx_bytes"] = generate_receituario_docx_bytes(rx_data, template_file=tpl_io)
-                            st.success("DOCX gerado.")
-                        except Exception as e:
-                            st.error(f"Erro ao gerar DOCX: {e}")
+                            pj = json.loads(pj)
+                        except Exception:
+                            pj = {}
+                    pl = (pj.get("plan") or {}) if isinstance(pj, dict) else {}
+                    queixa_hist = (pl.get("queixa") or "") if isinstance(pl, dict) else ""
+                    label = f"{dt} • {queixa_hist or 'Atendimento'}"
+                    plan_labels.append(label)
+                    label_to_plan[label] = p
 
-                with colrx2:
-                    if st.button("Gerar receituário (PDF)", use_container_width=True, key=K("rx", "gen_pdf")):
+                pick_plan = st.selectbox("Escolha um atendimento para carregar", plan_labels, key=K("att2","hist_pick"))
+                c_hist1, c_hist2 = st.columns([1, 1])
+
+                def _load_plan_record(rec: Dict[str, Any]):
+                    pj = rec.get("plan_json") or {}
+                    if isinstance(pj, str):
                         try:
-                            st.session_state["rx_pdf_bytes"] = generate_receituario_pdf_bytes(rx_data)
-                            st.success("PDF gerado.")
-                        except Exception as e:
-                            st.error(f"Erro ao gerar PDF: {e}")
+                            pj = json.loads(pj)
+                        except Exception:
+                            pj = {}
+                    pl = (pj.get("plan") or {}) if isinstance(pj, dict) else {}
+                    if not isinstance(pl, dict):
+                        pl = {}
 
-                dcol1, dcol2 = st.columns(2)
-                with dcol1:
-                    if st.session_state.get("rx_docx_bytes"):
-                        st.download_button(
-                            "⬇️ Baixar DOCX preenchido",
-                            data=st.session_state["rx_docx_bytes"],
-                            file_name=f"receituario_{(pat.get('nome') or 'paciente').strip().replace(' ','_')}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            use_container_width=True,
-                            key=K("rx", "dl_docx"),
-                        )
-                with dcol2:
-                    if HAS_REPORTLAB and st.session_state.get("rx_pdf_bytes"):
-                        st.download_button(
-                            "⬇️ Baixar PDF",
-                            data=st.session_state["rx_pdf_bytes"],
-                            file_name=f"receituario_{(pat.get('nome') or 'paciente').strip().replace(' ','_')}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True,
-                            key=K("rx", "dl_pdf"),
-                        )
+                    # Parecer IA: preferir salvo no plan_json (novo), senão buscar nas notas do intake
+                    parecer_loaded = ""
+                    if isinstance(pj, dict):
+                        parecer_loaded = pj.get("ai_parecer") or ""
+                    if not parecer_loaded:
+                        for it in (_intakes_hist or []):
+                            notes = it.get("notes") or ""
+                            if "Parecer IA" in str(notes):
+                                try:
+                                    parecer_loaded = str(notes).split("Parecer IA:", 1)[1].strip()
+                                except Exception:
+                                    parecer_loaded = ""
+                                break
 
-                with st.expander("Prévia do que vai no receituário", expanded=False):
-                    st.write("Paciente:", rx_data.get("patient_nome"))
-                    st.write("Queixa:", rx_data.get("queixa"))
-                    st.write("Foco:", rx_data.get("focus"))
-                    st.write("Binaural:", rx_data.get("binaural_txt"))
-                    st.write("Frequências auxiliares:", rx_data.get("freq_aux_txt"))
-                    st.write("Cama de cristal:", rx_data.get("cama_txt"))
-                    st.write("Cristais:", rx_data.get("cristais_txt"))
-                    st.write("Fito:", rx_data.get("fito_txt"))
+                    st.session_state[K("att2","queixa")] = pl.get("queixa", "") or ""
+                    st.session_state[K("att2","objetivo")] = pl.get("objetivo", "") or ""
+
+                    ans = pl.get("answers") or {}
+                    if isinstance(ans, dict):
+                        for k in ["sono", "energia", "ansiedade", "dor"]:
+                            if k in ans:
+                                st.session_state[K("att2", k)] = ans.get(k)
+
+                        o_sel = pl.get("origens_sel") or ans.get("origens_sel")
+                        if isinstance(o_sel, list):
+                            st.session_state[K("att2","origens_sel")] = _to_origens_options(o_sel)
+
+                    st.session_state["att2_loaded_plan"] = pl
+                    if parecer_loaded:
+                        st.session_state[K("att2","ai_parecer")] = parecer_loaded
+
+                with c_hist1:
+                    if st.button("Carregar atendimento selecionado", key=K("att2","hist_load")):
+                        rec = label_to_plan.get(pick_plan) or {}
+                        _load_plan_record(rec)
+                        st.success("Atendimento carregado ✅")
+                        st.rerun()
+
+                with c_hist2:
+                    if st.button("Carregar o último atendimento", key=K("att2","hist_load_last")):
+                        rec = (_plans_hist or [None])[0] or {}
+                        _load_plan_record(rec)
+                        st.success("Último atendimento carregado ✅")
+                        st.rerun()
+
+    st.markdown("### 9 Origens (selecione as que mais fazem sentido)")
+    # Usa a lista ORIGENS9 já existente no app (topo do arquivo)
+    o9_options = [f"{o.get('label')} — {o.get('desc')}" for o in (ORIGENS9 or [])]
+    o9_map = {o9_options[i]: (ORIGENS9[i].get("id"), ORIGENS9[i].get("label")) for i in range(len(o9_options))}
+    origens_sel = st.multiselect(
+        "Escolha 1 a 3 origens",
+        o9_options,
+        default=o9_options[:1] if o9_options else [],
+        key=K("att2","origens_sel"),
+    )
+    if len(origens_sel) > 3:
+        st.warning("Selecione no máximo 3 origens (para manter a triagem simples).")
+
+    st.markdown("### Intensidades (0 a 10)")
+    c1, c2, c3, c4 = st.columns(4)
+    dor = c1.slider("Dor", 0, 10, 0, key=K("att2","dor"))
+    ansiedade = c2.slider("Ansiedade", 0, 10, 0, key=K("att2","ansiedade"))
+    sono = c3.slider("Sono ruim", 0, 10, 0, key=K("att2","sono"))
+    energia = c4.slider("Cansaço", 0, 10, 0, key=K("att2","energia"))
+
+    # -------------------------
+    # 2) Regras simples -> Plano
+    # -------------------------
+    def _pick_binaural(obj: str, dor_v: int, ans_v: int, sono_v: int, ene_v: int):
+        # Retorna (beat_hz, dur_s, sugestao_texto)
+        if "Sono" in obj or sono_v >= 7:
+            return 2.5, 20*60, "Delta 2–3 Hz (20 min). Se quiser, finalize com Theta 6 Hz por 10 min."
+        if "Relaxamento" in obj or ans_v >= 7:
+            return 6.0, 20*60, "Theta 5–6 Hz (15–20 min). Se necessário, finalize com Alpha 10 Hz por 5–10 min."
+        if "Foco" in obj:
+            return 10.0, 15*60, "Alpha 10 Hz (10–15 min) para foco calmo (sem estimular demais)."
+        if "Dor" in obj or dor_v >= 7:
+            return 6.0, 15*60, "Theta 6 Hz (15 min) + respiração lenta; finalize com Alpha 10 Hz (5–10 min)."
+        if "Aterramento" in obj:
+            return 4.0, 15*60, "Theta 4 Hz (10–15 min) com aterramento (pés/raiz)."
+        if "Limpeza" in obj or "proteção" in obj.lower():
+            return 6.0, 12*60, "Theta 6 Hz (10–12 min) + intenção de limpeza/proteção."
+        # padrão
+        return 10.0, 12*60, "Alpha 10 Hz (10–12 min) como base equilibradora."
+
+
+    def _pick_fitoterapia(obj: str, dor_v: int, ans_v: int, sono_v: int, ene_v: int) -> Dict[str, Any]:
+        # Sugestão simples baseada no objetivo/sintomas (educativa; revisar caso a caso)
+        key = "ACALMAR"
+        if "Sono" in obj or sono_v >= 7:
+            key = "SONO"
+        elif "Dor" in obj or dor_v >= 7:
+            key = "DOR"
+        elif "Energia" in obj or ene_v >= 7:
+            key = "ENERGIA"
+        elif "Foco" in obj:
+            key = "ENERGIA" if ene_v >= 6 else "ACALMAR"
+        return {"categoria": key, **FITO_MAP.get(key, {"ervas": [], "preparo": ""})}
+
+    def _pick_chakras(obj: str, orig_ids: list[str], dor_v: int, ans_v: int, sono_v: int, ene_v: int):
+        # 1-3 chakras prioritários (nomes)
+        base = []
+        # regras por objetivo
+        if "Aterramento" in obj or "Dor" in obj:
+            base += ["Raiz", "Plexo Solar"]
+        if "Relaxamento" in obj or ans_v >= 6:
+            base += ["Cardíaco", "Frontal"]
+        if "Sono" in obj or sono_v >= 6:
+            base += ["Coronário", "Cardíaco"]
+        if "Foco" in obj:
+            base += ["Frontal", "Laríngeo"]
+        if "Autoestima" in obj or "emocional" in obj.lower():
+            base += ["Plexo Solar", "Cardíaco"]
+        if "Limpeza" in obj:
+            base += ["Cardíaco", "Coronário"]
+
+        # regras por origens (simplificadas)
+        if "psicoemocional" in orig_ids:
+            base += ["Cardíaco"]
+        if "mental_cognitivo" in orig_ids:
+            base += ["Frontal"]
+        if "energetico_espiritual" in orig_ids:
+            base += ["Coronário", "Raiz"]
+        if "bioquimico_nutricional" in orig_ids or "metabolico" in orig_ids:
+            base += ["Plexo Solar", "Sacral"]
+        if "neuroendocrino" in orig_ids:
+            base += ["Plexo Solar", "Coronário"]
+        if "imunologico_inflamatorio" in orig_ids:
+            base += ["Plexo Solar", "Cardíaco"]
+
+        # unique mantendo ordem
+        seen=set()
+        base=[x for x in base if not (x in seen or seen.add(x))]
+        return base[:3] if base else ["Cardíaco"]
+
+    CHAKRA_STONES = {
+        "Raiz": ["Turmalina Negra", "Hematita", "Ônix"],
+        "Sacral": ["Cornalina", "Pedra da Lua", "Calcita Laranja"],
+        "Plexo Solar": ["Citrino", "Olho de Tigre", "Pirita"],
+        "Cardíaco": ["Quartzo Rosa", "Aventurina", "Malaquita"],
+        "Laríngeo": ["Sodalita", "Água-marinha", "Amazonita"],
+        "Frontal": ["Ametista", "Lápis-lazúli", "Labradorita"],
+        "Coronário": ["Selenita", "Cristal de Quartzo", "Ametista Clara"],
+    }
+
+    # solfeggio/chakra frequencies (usa seu arquivo frequencies via load_frequencies)
+    def _freq_code_by_name(rows, contains_any):
+        # pega o primeiro código cujo "nome" contenha algum termo
+        for r in rows or []:
+            nm = str(r.get("nome") or "").lower()
+            if any(t in nm for t in contains_any):
+                code = str(r.get("code") or "").strip()
+                if code:
+                    return code
+        return None
+
+    def _pick_freq_codes(chakras_list: list[str]):
+        try:
+            sol = load_frequencies("solfeggio")
+            chak = load_frequencies("chakra")
+        except Exception:
+            sol, chak = [], []
+
+        # tenta mapear chakra -> code do seu arquivo de chakra
+        chakra_to_terms = {
+            "Raiz": ["raiz", "root", "muladhara"],
+            "Sacral": ["sacral", "svadhisthana"],
+            "Plexo Solar": ["plexo", "solar", "manipura"],
+            "Cardíaco": ["coração", "cardíaco", "heart", "anahata"],
+            "Laríngeo": ["garganta", "laríngeo", "throat", "vishuddha"],
+            "Frontal": ["terceiro olho", "frontal", "ajna", "brow"],
+            "Coronário": ["coroa", "coronário", "crown", "sahasrara"],
+        }
+        chakra_codes=[]
+        for ck in chakras_list:
+            code=_freq_code_by_name(chak, chakra_to_terms.get(ck, [ck.lower()]))
+            if code:
+                chakra_codes.append(code)
+
+        # solfeggio simples: 396 aterramento, 528 harmonização, 741 limpeza, 963 conexão
+        sol_codes=[]
+        if "Raiz" in chakras_list:
+            sol_codes.append(_freq_code_by_name(sol, ["396"]) or "SOL396")
+        if "Cardíaco" in chakras_list:
+            sol_codes.append(_freq_code_by_name(sol, ["528"]) or "SOL528")
+        if "Laríngeo" in chakras_list:
+            sol_codes.append(_freq_code_by_name(sol, ["741"]) or "SOL741")
+        if "Coronário" in chakras_list or "Frontal" in chakras_list:
+            sol_codes.append(_freq_code_by_name(sol, ["963"]) or "SOL963")
+
+        # unique
+        seen=set()
+        out=[c for c in (sol_codes+chakra_codes) if c and not (c in seen or seen.add(c))]
+        return out[:6]
+
+    # -------------------------
+    # 3) Geração do plano
+    # -------------------------
+    if st.button("✨ Gerar plano terapêutico", type="primary", key=K("att2","btn")):
+        orig_ids = [o9_map[x][0] for x in origens_sel if x in o9_map]
+        orig_labels = [o9_map[x][1] for x in origens_sel if x in o9_map]
+
+        beat_hz, dur_s, binaural_txt = _pick_binaural(objetivo, dor, ansiedade, sono, energia)
+        chakras_list = _pick_chakras(objetivo, orig_ids, dor, ansiedade, sono, energia)
+        freq_codes = _pick_freq_codes(chakras_list)
+
+        pedras = []
+        for ck in chakras_list:
+            pedras += CHAKRA_STONES.get(ck, [])
+        seen=set()
+        pedras=[p for p in pedras if not (p in seen or seen.add(p))]
+        pedras = pedras[:6]
+
+        fitoterapia = _pick_fitoterapia(objetivo, dor, ansiedade, sono, energia)
+
+        st.session_state["att2_plan"] = {
+            "patient_nome": patient_nome.strip(),
+            "queixa": queixa.strip(),
+            "objetivo": objetivo,
+            "origens": orig_labels,
+            "binaural": {"beat_hz": float(beat_hz), "dur_s": int(dur_s), "texto": binaural_txt},
+            "chakras": chakras_list,
+            "freq_codes": freq_codes,
+            "pedras": pedras,
+            "fitoterapia": fitoterapia,
+            "answers": {
+                "objetivo": objetivo,
+                "origens_sel": orig_labels,
+                "dor": int(dor),
+                "ansiedade": int(ansiedade),
+                "sono_ruim": int(sono),
+                "cansaco": int(energia),
+            },
+            "scores": {
+                "dor_pct": float(dor) * 10.0,
+                "ansiedade_pct": float(ansiedade) * 10.0,
+                "sono_ruim_pct": float(sono) * 10.0,
+                "cansaco_pct": float(energia) * 10.0,
+            },
+        }
+
+    plan = st.session_state.get("att2_plan")
+    if plan:
+        st.markdown("---")
+        st.subheader("🧾 Plano Terapêutico (para usar na cama)")
+
+        if plan.get("patient_nome"):
+            st.write(f"**Paciente:** {plan['patient_nome']}")
+        if plan.get("queixa"):
+            st.write(f"**Queixa:** {plan['queixa']}")
+        st.write(f"**Objetivo:** {plan.get('objetivo','')}")
+        if plan.get("origens"):
+            st.write("**Origens (9):** " + ", ".join(plan["origens"]))
+
+        b = plan["binaural"]
+        st.markdown("### 🎧 Binaural recomendado")
+        st.write(f"**Beat:** {b['beat_hz']:.1f} Hz  •  **Duração:** {int(b['dur_s']/60)} min")
+        st.caption(b["texto"])
+
+        colx, coly = st.columns([1,1])
+        if colx.button("Aplicar no Binaural agora", key=K("att2","apply_binaural")):
+            st.session_state[KEY_BEAT] = float(b["beat_hz"])
+            st.session_state[KEY_DUR_S] = int(b["dur_s"])
+            st.success("Pronto! Vá para a aba **Binaural** e clique em **Tocar**.")
+        coly.info("Dica: use fones e volume moderado.")
+
+        st.markdown("### 🔔 Solfeggio + Chakras (auxiliares)")
+        st.write("**Chakras prioritários:** " + ", ".join(plan["chakras"]))
+        if plan["freq_codes"]:
+            st.write("**Códigos sugeridos:** " + ", ".join(plan["freq_codes"]))
+            st.caption("Se os códigos não existirem no seu arquivo, você pode trocar manualmente na aba Binaural → Frequências auxiliares.")
+        else:
+            st.caption("Não achei as frequências no arquivo. Você pode selecionar manualmente na aba Binaural.")
+
+        st.markdown("### 💎 Pedras sugeridas (em conjunto na sessão)")
+        st.write(", ".join(plan["pedras"]) if plan["pedras"] else "—")
+
+
+        st.markdown("### 🌿 Fitoterapia sugerida (opcional)")
+        fito = plan.get("fitoterapia") or {}
+        ervas = fito.get("ervas") or []
+        preparo = fito.get("preparo") or ""
+        if ervas:
+            st.write("**Ervas:** " + ", ".join(ervas))
+        else:
+            st.write("—")
+        if preparo:
+            st.caption(preparo)
+        st.caption("⚠️ Revisar alergias, gestação/lactação e uso de medicamentos. Não substitui acompanhamento médico.")
+
+        st.markdown("### ✅ Roteiro rápido (10–20 min)")
+        st.markdown("""- 1) **Intenção + respiração** (1–2 min)
+- 2) **Cama de cristal + cromoterapia** nos chakras prioritários (8–12 min)
+- 3) **Binaural** conforme recomendado (10–20 min)
+- 4) **Solfeggio** (em baixo volume/ambiente) + **pedras** posicionadas (mesmo tempo)
+- 5) **Fechamento**: água + ancoragem (1–2 min)
+""")
+
+        # -------------------------
+        # Parecer IA (opcional)
+        # -------------------------
+        with st.expander("🤖 Parecer da IA (opcional) — explicação do porquê do plano", expanded=False):
+            st.caption("A IA gera um texto explicativo com base nas respostas e no plano calculado. Você revisa antes de usar.")
+            if not OPENAI_API_KEY:
+                st.info("Para usar, configure **OPENAI_API_KEY** em Settings → Secrets (Streamlit Cloud).")
+            elif not HAS_REQUESTS:
+                st.info("Para usar, instale a dependência **requests** (adicione `requests` no requirements.txt).")
+            else:
+                key_parecer = K("att2","ai_parecer")
+                if st.button("Gerar parecer IA", key=K("att2","btn_ai_parecer")):
+                    try:
+                        answers = plan.get("answers") or {}
+                        scores = plan.get("scores") or {}
+                        prompt = f"""
+                        Você irá escrever um texto para o paciente (linguagem simples, acolhedora e objetiva), com base no apanhado de informações abaixo.
+                        
+                        REGRAS IMPORTANTES:
+                        - Não diagnosticar e não prometer cura.
+                        - Evitar termos absolutos ("vai curar", "garante", "certeza").
+                        - Incluir uma observação de segurança: não substitui acompanhamento médico; interromper/ajustar se houver desconforto.
+                        - Fitoterapia: tratar como sugestão opcional e lembrar de revisar alergias, gestação/lactação e uso de medicamentos.
+                        
+                        DADOS DO PACIENTE
+                        Nome: {patient_nome_sel or patient_nome or "Não informado"}
+                        Queixa principal: {plan.get("queixa","")}
+                        
+                        Respostas (0–10):
+                        {json.dumps(plan.get("answers") or {}, ensure_ascii=False, indent=2)}
+                        
+                        Indicadores (scores em %):
+                        {json.dumps(plan.get("scores") or {}, ensure_ascii=False, indent=2)}
+                        
+                        PLANO CALCULADO PELO SISTEMA (para a sessão na cama)
+                        - Objetivo: {plan.get("objetivo","")}
+                        - Origens (9): {", ".join(plan.get("origens", []) or [])}
+                        - Chakras prioritários: {", ".join(plan.get("chakras", []) or [])}
+                        - Códigos (Solfeggio/Chakras): {", ".join(plan.get("freq_codes", []) or [])}
+                        - Binaural: beat {plan.get("binaural", {}).get("beat_hz","")} Hz | duração {int((plan.get("binaural", {}).get("dur_s", 0) or 0)/60)} min
+                        - Pedras: {", ".join(plan.get("pedras", []) or [])}
+                        - Fitoterapia (opcional): {", ".join((plan.get("fitoterapia", {}) or {}).get("ervas", []) or [])}
+                          Preparo: {(plan.get("fitoterapia", {}) or {}).get("preparo","")}
+                        
+                        TAREFA
+                        Escreva o parecer em 5 blocos:
+                        1) **Explicação para você** (4–6 linhas)
+                        2) **Por que esse plano foi escolhido** (bullets curtos: binaural, códigos, chakras, pedras, fitoterapia)
+                        3) **Como usar na sessão** (3 passos simples)
+                        4) **Afirmações para o tratamento** (5 afirmações curtas)
+                        5) **Observação de segurança** (1–2 linhas)
+                        
+                        Tamanho total: 14–22 linhas.
+                        """
+
+                        parecer = _openai_responses(prompt)
+                        st.session_state[key_parecer] = parecer
+                    except Exception as e:
+                        st.error(f"Não consegui gerar o parecer IA: {e}")
+
+                parecer_txt = st.session_state.get(key_parecer, "")
+                if parecer_txt:
+                    st.markdown("**Parecer gerado:**")
+                    st.write(parecer_txt)
+                    st.caption("Você pode copiar/editar esse texto antes de enviar ao paciente.")
+
+
+st.markdown("---")
+st.subheader("💾 Salvar no prontuário (opcional)")
+if not patient_id:
+    st.info("Para salvar, selecione ou cadastre um paciente lá no topo da aba.")
+else:
+    if st.button("Salvar este atendimento", key=K("att2","btn_save")):
+        try:
+            ans = plan.get("answers") or {}
+            sc = plan.get("scores") or {}
+            flags = {}
+            _parecer = st.session_state.get(K("att2","ai_parecer"), "")
+            _notes = "Atendimento (Novo) — gerado automaticamente"
+            if _parecer:
+                _notes += "\n\nParecer IA:\n" + str(_parecer)
+            intake_id = insert_intake(
+                patient_id=patient_id,
+                complaint=plan.get("queixa","") or "",
+                answers={k: (int(v) if isinstance(v,(int,float)) else v) for k,v in ans.items()},
+                scores={k: float(v) for k,v in sc.items()},
+                flags=flags,
+                notes=_notes,
+            )
+            _plan_json = {
+                "type": "atendimento_novo",
+                "generated_at": str(date.today()),
+                "plan": plan,
+                "ai_parecer": _parecer or "",
+            }
+            _ = insert_plan(
+                patient_id=patient_id,
+                intake_id=intake_id,
+                focus=[("Atendimento novo", 1.0)],
+                selected_names=["ATENDIMENTO_NOVO"],
+                sessions_qty=1,
+                cadence_days=7,
+                plan_json=_plan_json,
+            )
+            st.success("Salvo com sucesso ✅")
+        except Exception:
+            st.error("Não consegui salvar no banco. Verifique a conexão/credenciais e tente novamente.")
+
+
